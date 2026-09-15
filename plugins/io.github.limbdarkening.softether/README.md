@@ -12,6 +12,9 @@ accounts.
   renders the corresponding flag without network lookups.
 - Reports the VPN as usable only after SoftEther is connected, the virtual
   adapter has an address, and the adapter owns a default route.
+- Turns the connection switch off as soon as the tunnel stops being usable, so a
+  link that the server or the network dropped is visible even while the
+  SoftEther client still lists the session as connected.
 - Protects the VPN server's physical route before making the tunnel the default
   route, preventing the tunnel from trying to carry its own transport.
 

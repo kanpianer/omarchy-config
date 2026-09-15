@@ -45,6 +45,17 @@ assert.equal(state({ connected: true, usable: false }), "warning")
 assert.equal(state({ lastError: "command failed", desiredState: 0 }), "error")
 assert.equal(state({ installed: false }), "error")
 
+// The switch follows the tunnel, not the client's session list: a session that
+// survived the link dropping (usable false) must read as off, while a connect
+// the user asked for stays on until that request settles.
+assert.equal(model.switchOn({ desiredState: -1, usable: true }), true)
+assert.equal(model.switchOn({ desiredState: -1, usable: false }), false)
+assert.equal(model.switchOn({ desiredState: 1, usable: false }), true)
+assert.equal(model.switchOn({ desiredState: 1, usable: true }), true)
+assert.equal(model.switchOn({ desiredState: 0, usable: true }), false)
+assert.equal(model.switchOn({ desiredState: 0, usable: false }), false)
+assert.equal(model.switchOn(undefined), false)
+
 assert.equal(model.validAccountName("Test VPN Germany", false), true)
 assert.equal(model.validAccountName("#AU TPG 4%", false), true)
 assert.equal(model.validAccountName("#JP Sony 4% wz", false), true)

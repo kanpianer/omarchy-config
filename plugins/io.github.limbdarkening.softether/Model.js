@@ -95,6 +95,18 @@ function shouldPulse(actionKind) {
   return String(actionKind || "") === "connect"
 }
 
+// The connection switch shows what the tunnel is doing, not what the client
+// claims. SoftEther can keep listing a session after the network or the server
+// dropped it, and a session without an address or a default route is not a
+// working VPN, so it must not hold the switch on. A connect the user asked for
+// stays on until that request settles; a requested disconnect stays off.
+function switchOn(options) {
+  var state = options || {}
+  if (state.desiredState === 0) return false
+  if (state.desiredState === 1) return true
+  return state.usable === true
+}
+
 function parseAccountList(raw) {
   var input = bounded(raw, MAX_COMMAND_CHARS)
   if (input === null) return []
@@ -235,6 +247,7 @@ if (typeof module !== "undefined") {
     statusKind: statusKind,
     presentationState: presentationState,
     shouldPulse: shouldPulse,
+    switchOn: switchOn,
     parseAccountList: parseAccountList,
     parseAddress: parseAddress,
     hasDefaultRoute: hasDefaultRoute,

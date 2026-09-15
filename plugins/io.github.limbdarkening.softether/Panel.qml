@@ -47,7 +47,10 @@ Panel {
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property bool isVpnConnected: vpn.connectedAccount !== null
+  // The flag means the tunnel is usable (session, adapter address, default
+  // route). A session that outlived its link falls back to the shield, whose
+  // warning badge is what tells the user the connection dropped.
+  readonly property bool isVpnConnected: vpn.usable
   readonly property string selectedFlag: vpn.selectedAccount
     ? String(vpn.selectedAccount.flag || "🏳") : "🏳"
   readonly property string connectedFlag: vpn.connectedAccount

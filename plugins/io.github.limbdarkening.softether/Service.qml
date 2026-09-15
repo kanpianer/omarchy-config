@@ -40,7 +40,13 @@ Item {
   readonly property var connectedAccount: firstAccountWithState("connected")
   readonly property var connectingAccount: firstAccountWithState("connecting")
   readonly property var activeAccount: connectedAccount || connectingAccount
-  readonly property bool active: desiredState === -1 ? activeAccount !== null : desiredState === 1
+  // The switch follows the tunnel, not the client session: a session SoftEther
+  // still lists after the link dropped has no address and no default route, and
+  // must not keep the switch on as if the VPN were connected.
+  readonly property bool active: Model.switchOn({
+    desiredState: desiredState,
+    usable: usable
+  })
   readonly property bool usable: connectedAccount !== null && tunnelAddress !== "" && hasVpnDefaultRoute
   readonly property bool connectAnimationActive: Model.shouldPulse(actionKind)
   readonly property string country: selectedAccount ? selectedAccount.country : "VPN"
@@ -196,7 +202,10 @@ Item {
     if (target) {
       desiredState = 1
       var current = activeAccount
-      if (current && current.name !== target.name) {
+      // This only runs while the switch is off, and it is off because nothing
+      // is routed: any session the client still lists is stale, so tear it down
+      // instead of asking a client that believes it is online to connect again.
+      if (current) {
         runAction("disconnect", current.name, target.name)
       } else {
         runAction("connect", target.name, "")
@@ -215,7 +224,9 @@ Item {
     selectionRequested(account.name)
     desiredState = 1
     var current = activeAccount
-    if (current && current.name !== account.name) {
+    // Picking the node the client still lists while the tunnel is down has to
+    // reconnect, not fall through to a connect the client would reject.
+    if (current && (current.name !== account.name || !usable)) {
       runAction("disconnect", current.name, account.name)
     } else {
       runAction("connect", account.name, "")
@@ -370,7 +381,10 @@ Item {
         root.accounts = parsedAccounts
         root.choosePreferredAccount()
         if (root.lastError.indexOf("service") !== -1) root.lastError = ""
-        if (root.desiredState === 1 && root.activeAccount) root.desiredState = -1
+        // Optimism lasts until the tunnel is genuinely routed. Clearing it as
+        // soon as a session appears would drop the switch back to off while the
+        // address and default route are still being installed.
+        if (root.desiredState === 1 && root.usable) root.desiredState = -1
         if (root.desiredState === 0 && !root.activeAccount) root.desiredState = -1
       } else {
         root.serviceAvailable = false
