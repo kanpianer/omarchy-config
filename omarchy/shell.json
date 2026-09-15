@@ -1,0 +1,111 @@
+{
+  "bar": {
+    "centerAnchor": "omarchy.clock",
+    "layout": {
+      "center": [
+        {
+          "id": "gao.indicators"
+        },
+        {
+          "id": "omarchy.weather"
+        },
+        {
+          "format": "dddd HH:mm",
+          "formatAlt": "d MMMM 'W'ww yyyy",
+          "id": "omarchy.clock",
+          "verticalFormat": "HH\n—\nmm"
+        },
+        {
+          "id": "omarchy.keyboard-layout"
+        },
+        {
+          "id": "alexzeitler.ytdlp"
+        },
+        {
+          "id": "omarchy.system-update"
+        }
+      ],
+      "left": [
+        {
+          "id": "omarchy.menu"
+        },
+        {
+          "id": "omarchy.workspaces"
+        },
+        {
+          "id": "rogergdot.forcequit"
+        },
+        {
+          "id": "omarchy.active-window"
+        }
+      ],
+      "right": [
+        {
+          "id": "omarchy.tray"
+        },
+        {
+          "id": "omarchy.agents"
+        },
+        {
+          "id": "community.cn-input"
+        },
+        {
+          "id": "io.github.limbdarkening.softether",
+          "accountName": "#US Charter 10% acar---",
+          "accountOrder": [
+            "#US Charter 10% acar---",
+            "#US Frankfort 10% acar",
+            "#US VZ 83% NEW",
+            "#US Charter in",
+            "#JCOM 0%",
+            "#JP JCOM 1%",
+            "#JP SoftBank 3%",
+            "#JP Sony 4% wz",
+            "#JP SoftBank 3% wz",
+            "#JP SONY 1% en",
+            "#JP SoftBank 4% en",
+            "#JP SoftBank 2% en",
+            "#JP Softbank 8% ni"
+          ],
+          "adapterName": "vpn_vpn",
+          "networkProfileName": "SoftEther VPN Network",
+          "refreshIntervalSec": 10
+        },
+        {
+          "id": "omarchy.network"
+        },
+        {
+          "id": "omarchy.audio"
+        },
+        {
+          "id": "omarchy.microphone"
+        },
+        {
+          "id": "omarchy.bluetooth"
+        },
+        {
+          "id": "gladimdim.config-sync"
+        },
+        {
+          "id": "omarchy.monitor"
+        },
+        {
+          "id": "omarchy.power"
+        },
+        {
+          "id": "nihalebr.wellbeing"
+        }
+      ]
+    },
+    "position": "top",
+    "transparent": false,
+    "edgeMargin": -5,
+    "id": "gao.bar"
+  },
+  "idle": {
+    "lock": 300,
+    "screensaver": 150
+  },
+  "plugins": [],
+  "version": 1
+}

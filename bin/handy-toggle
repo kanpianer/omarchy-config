@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+def is_handy_running():
+    res = subprocess.run(["pgrep", "-x", "handy"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return res.returncode == 0
+
+def main():
+    if not is_handy_running():
+        # Start handy in the background
+        if shutil.which("uwsm-app"):
+            subprocess.Popen(["uwsm-app", "--", "handy", "--start-hidden"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(["handy", "--start-hidden"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+
+    cmd = ["handy", "--toggle-transcription"]
+    settings_path = os.path.expanduser("~/.local/share/com.pais.handy/settings_store.json")
+    target_key = "ctrl+shift+space"
+
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            settings = data.get("settings", {})
+            bindings = settings.get("bindings", {})
+            post_process_enabled = settings.get("post_process_enabled", False)
+
+            transcribe_binding = bindings.get("transcribe", {}).get("current_binding", "").lower()
+            post_binding = bindings.get("transcribe_with_post_process", {}).get("current_binding", "").lower()
+
+            if post_binding == target_key:
+                if transcribe_binding == target_key:
+                    # Both are set to target_key; check if post_process is enabled
+                    if post_process_enabled:
+                        cmd = ["handy", "--toggle-post-process"]
+                    else:
+                        cmd = ["handy", "--toggle-transcription"]
+                else:
+                    cmd = ["handy", "--toggle-post-process"]
+            elif transcribe_binding == target_key:
+                cmd = ["handy", "--toggle-transcription"]
+        except Exception:
+            cmd = ["handy", "--toggle-transcription"]
+
+    subprocess.run(cmd)
+
+if __name__ == "__main__":
+    main()

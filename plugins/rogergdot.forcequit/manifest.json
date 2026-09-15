@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "id": "rogergdot.forcequit",
+  "name": "Force Quit",
+  "version": "1.0.0",
+  "author": "Gregor Oppitz",
+  "license": "MIT",
+  "description": "List every open window grouped by process and end one immediately, the way macOS's Force Quit dialog does",
+  "homepage": "https://github.com/RogerGdot/omarchy-forcequit",
+  "repository": "https://github.com/RogerGdot/omarchy-forcequit.git",
+  "keywords": [
+    "force quit",
+    "kill",
+    "process",
+    "window",
+    "task manager",
+    "bar-widget"
+  ],
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Force Quit",
+    "description": "Pick an application from the open-window list and kill it",
+    "category": "Window management",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "requireConfirm": true,
+      "confirmSeconds": 5,
+      "visibleRows": 8
+    },
+    "schema": [
+      {
+        "key": "requireConfirm",
+        "type": "boolean",
+        "label": "Ask before force quitting",
+        "defaultValue": true
+      },
+      {
+        "key": "confirmSeconds",
+        "type": "integer",
+        "label": "Seconds the confirmation stays armed",
+        "min": 2,
+        "max": 30,
+        "step": 1,
+        "defaultValue": 5
+      },
+      {
+        "key": "visibleRows",
+        "type": "integer",
+        "label": "Rows shown before the list scrolls",
+        "min": 3,
+        "max": 20,
+        "step": 1,
+        "defaultValue": 8
+      }
+    ]
+  }
+}
