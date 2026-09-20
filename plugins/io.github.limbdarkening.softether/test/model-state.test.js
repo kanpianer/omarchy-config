@@ -50,10 +50,13 @@ assert.equal(state({ installed: false }), "error")
 // the user asked for stays on until that request settles.
 assert.equal(model.switchOn({ desiredState: -1, usable: true }), true)
 assert.equal(model.switchOn({ desiredState: -1, usable: false }), false)
+assert.equal(model.switchOn({ desiredState: -1, connected: true, usable: false }), true)
+assert.equal(model.switchOn({ desiredState: -1, connecting: true, usable: false }), true)
 assert.equal(model.switchOn({ desiredState: 1, usable: false }), true)
 assert.equal(model.switchOn({ desiredState: 1, usable: true }), true)
 assert.equal(model.switchOn({ desiredState: 0, usable: true }), false)
 assert.equal(model.switchOn({ desiredState: 0, usable: false }), false)
+assert.equal(model.switchOn({ desiredState: 0, connected: true }), false)
 assert.equal(model.switchOn(undefined), false)
 
 assert.equal(model.validAccountName("Test VPN Germany", false), true)

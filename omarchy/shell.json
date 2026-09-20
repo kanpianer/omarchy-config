@@ -51,7 +51,7 @@
         },
         {
           "id": "io.github.limbdarkening.softether",
-          "accountName": "#US Charter 10% acar---",
+          "accountName": "#JP SoftBank 3% wz",
           "accountOrder": [
             "#US Charter 10% acar---",
             "#US Frankfort 10% acar",
@@ -106,6 +106,10 @@
     "lock": 300,
     "screensaver": 150
   },
-  "plugins": [],
+  "plugins": [
+    {
+      "id": "md.lifeos.doubao-say"
+    }
+  ],
   "version": 1
 }

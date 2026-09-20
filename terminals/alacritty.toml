@@ -19,6 +19,7 @@ decorations = "None"
 
 [keyboard]
 bindings = [
+{ key = "V", mods = "Control", action = "Paste" },
 { key = "Insert", mods = "Shift", action = "Paste" },
 { key = "Insert", mods = "Control", action = "Copy" },
 # Send Shift+Return as CSI-u so TUIs can distinguish it from Return without treating it as Alt+Return.

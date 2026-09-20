@@ -45,6 +45,8 @@ Item {
   // must not keep the switch on as if the VPN were connected.
   readonly property bool active: Model.switchOn({
     desiredState: desiredState,
+    connected: connectedAccount !== null,
+    connecting: connectingAccount !== null,
     usable: usable
   })
   readonly property bool usable: connectedAccount !== null && tunnelAddress !== "" && hasVpnDefaultRoute
@@ -120,13 +122,16 @@ Item {
   }
 
   function choosePreferredAccount() {
+    if (activeAccount) {
+      selectedAccountName = activeAccount.name
+      return
+    }
     var configured = configuredAccountName
     if (accountNamed(configured)) {
       selectedAccountName = configured
       return
     }
-    if (activeAccount) selectedAccountName = activeAccount.name
-    else if (accounts.length > 0) selectedAccountName = accounts[0].name
+    if (accounts.length > 0) selectedAccountName = accounts[0].name
     else selectedAccountName = ""
   }
 
@@ -184,7 +189,22 @@ Item {
       lastError = settingsError
       return
     }
-    if (busy || !serviceAvailable) return
+    if (!serviceAvailable) return
+
+    if (actionProcess.running) {
+      if (actionKind === "connect") {
+        desiredState = 0
+        actionStatus = "Disconnecting…"
+        connectAfterDisconnect = ""
+        actionProcess.running = false
+        delayedRefresh.restart()
+        return
+      }
+      if (actionKind === "disconnect") {
+        return
+      }
+    }
+
     var current = activeAccount || selectedAccount || (accounts.length > 0 ? accounts[0] : null)
     if (current && current.name) {
       desiredState = 0
@@ -234,7 +254,7 @@ Item {
   }
 
   function toggle() {
-    if (active) disconnectVpn()
+    if (active || activeAccount !== null || (busy && actionKind === "connect") || desiredState === 1) disconnectVpn()
     else connectVpn()
   }
 
@@ -384,8 +404,11 @@ Item {
         // Optimism lasts until the tunnel is genuinely routed. Clearing it as
         // soon as a session appears would drop the switch back to off while the
         // address and default route are still being installed.
-        if (root.desiredState === 1 && root.usable) root.desiredState = -1
+        if (root.desiredState === 1 && (root.usable || root.connectedAccount !== null)) root.desiredState = -1
         if (root.desiredState === 0 && !root.activeAccount) root.desiredState = -1
+        else if (root.desiredState === 0 && root.activeAccount && !actionProcess.running) {
+          root.disconnectVpn()
+        }
       } else {
         root.serviceAvailable = false
         root.accounts = []
@@ -453,6 +476,12 @@ Item {
       root.actionStatus = ""
 
       if (exitCode !== 0 || stdout === null || stderr === null) {
+        if (root.desiredState === 0) {
+          root.lastError = ""
+          settleDesiredState.restart()
+          delayedRefresh.restart()
+          return
+        }
         root.desiredState = -1
         root.lastError = stdout === null || stderr === null
           ? "SoftEther command output exceeded safe limits"

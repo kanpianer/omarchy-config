@@ -104,7 +104,7 @@ function switchOn(options) {
   var state = options || {}
   if (state.desiredState === 0) return false
   if (state.desiredState === 1) return true
-  return state.usable === true
+  return Boolean(state.connected || state.connecting || state.usable)
 }
 
 function parseAccountList(raw) {

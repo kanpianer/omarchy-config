@@ -50,7 +50,7 @@ Panel {
   // The flag means the tunnel is usable (session, adapter address, default
   // route). A session that outlived its link falls back to the shield, whose
   // warning badge is what tells the user the connection dropped.
-  readonly property bool isVpnConnected: vpn.usable
+  readonly property bool isVpnConnected: vpn.connectedAccount !== null
   readonly property string selectedFlag: vpn.selectedAccount
     ? String(vpn.selectedAccount.flag || "🏳") : "🏳"
   readonly property string connectedFlag: vpn.connectedAccount
@@ -97,31 +97,37 @@ Panel {
   }
 
   function requestToggleVpn() {
-    if (!vpn.settingsValid || vpn.busy || !vpn.serviceAvailable || vpn.accounts.length === 0) return
-    if (vpn.active) {
-      pendingAction = "disconnect"
+    if (confirmDialog.opened) {
+      confirmDialog.opened = false
+      pendingAction = ""
       pendingAccount = null
-      confirmMessage = "Disconnect from VPN?"
-      confirmButtonText = "Disconnect"
-    } else {
-      pendingAction = "connect"
-      pendingAccount = vpn.selectedAccount
-      var targetName = vpn.selectedAccount ? (vpn.selectedAccount.name || vpn.country) : vpn.country
-      confirmMessage = "Connect to VPN node \"" + targetName + "\"?"
-      confirmButtonText = "Connect"
     }
-    confirmDialog.selectedIndex = 1
-    confirmDialog.opened = true
+    if (!vpn.settingsValid || !vpn.serviceAvailable || vpn.accounts.length === 0) return
+    if ((vpn.busy && vpn.actionKind === "disconnect") || vpn.desiredState === 0) return
+
+    var isConnectingOrConnected = vpn.active
+      || vpn.connectedAccount !== null
+      || vpn.connectingAccount !== null
+      || (vpn.busy && vpn.actionKind === "connect")
+      || vpn.desiredState === 1
+
+    if (isConnectingOrConnected) {
+      vpn.disconnectVpn()
+    } else {
+      vpn.connectVpn()
+    }
   }
 
   function chooseAccount(account) {
     if (!account) return
-    if (vpn.active && (vpn.connectedAccount && vpn.connectedAccount.name === account.name)) {
+    var isCurrent = (vpn.connectedAccount && vpn.connectedAccount.name === account.name)
+      || (vpn.activeAccount && vpn.activeAccount.name === account.name)
+    if (isCurrent) {
       pendingAction = "disconnect"
       pendingAccount = null
       confirmMessage = "Disconnect from VPN?"
       confirmButtonText = "Disconnect"
-    } else if (vpn.active) {
+    } else if (vpn.active || vpn.connectedAccount !== null || vpn.activeAccount !== null) {
       pendingAction = "connect_account"
       pendingAccount = account
       confirmMessage = "Disconnect current VPN and connect to \"" + account.name + "\"?"
@@ -425,7 +431,15 @@ Panel {
           VpnSwitch {
             id: powerSwitch
             checked: vpn.active
-            busy: vpn.busy || !vpn.serviceAvailable || vpn.accounts.length === 0
+              || vpn.connectedAccount !== null
+              || vpn.connectingAccount !== null
+              || (vpn.busy && vpn.actionKind === "connect")
+              || vpn.desiredState === 1
+            busy: !vpn.serviceAvailable
+              || vpn.accounts.length === 0
+              || vpn.desiredState === 0
+              || (vpn.busy && vpn.actionKind !== "connect")
+              || vpn.importing
             foreground: root.foreground
             accent: Color.accent
             Layout.alignment: Qt.AlignVCenter
@@ -436,7 +450,7 @@ Panel {
               visible: powerSwitch.containsMouse
               text: !vpn.serviceAvailable ? "SoftEther client service is stopped"
                 : (vpn.accounts.length === 0 ? "No imported VPN profiles"
-                : (vpn.active ? "Disconnect VPN" : "Connect to VPN"))
+                : (powerSwitch.checked ? "Disconnect VPN" : "Connect to VPN"))
               fontFamily: root.fontFamily
             }
           }
@@ -447,7 +461,9 @@ Panel {
 
             Text {
               Layout.fillWidth: true
-              text: root.selectedFlag + "  " + (vpn.selectedAccount ? (vpn.selectedAccount.name || vpn.country) : vpn.country)
+              text: (vpn.activeAccount ? (vpn.activeAccount.flag || "🏳") : root.selectedFlag) + "  "
+                + (vpn.activeAccount ? (vpn.activeAccount.name || vpn.activeAccount.country)
+                  : (vpn.selectedAccount ? (vpn.selectedAccount.name || vpn.country) : vpn.country))
               textFormat: Text.PlainText
               color: root.foreground
               font.family: root.fontFamily
