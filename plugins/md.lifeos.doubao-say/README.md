@@ -2,8 +2,9 @@
 
 [简体中文](README.zh-CN.md)
 
-A standalone GTK4 voice-input application for Linux/Wayland, powered by Doubao
-cloud recognition. English by default. Settings offers **System / English /
+A standalone GTK4 voice-input application for Linux (Hyprland/Wayland and native X11). It uses Doubao
+web-account recognition by default and can optionally use the official Volcengine
+Seed ASR 2.0 API. English by default. Settings offers **System / English /
 简体中文** and saves each choice automatically. System follows the session's language preferences,
 uses Simplified Chinese for Chinese locales, and falls back to English otherwise.
 Optional Omarchy integration manages the **same application**, not another engine.
@@ -24,7 +25,9 @@ then finish onboarding. Removal differs from the offline archive. Do not mix bot
 
 Open **Doubao Say** from your application launcher:
 
-1. **Sign in** — open the Doubao web sign-in. Credentials stay on this device.
+1. **Recognition** — use the default Doubao web sign-in, or select
+   **Volcengine official API** in Settings and add your own speech API key.
+   Credentials stay on this device.
 2. **Microphone** — choose a PipeWire input, then run a three-second,
    device-only check with actionable feedback. Device changes save immediately.
 3. **Trigger key** — choose Fn, Ctrl, Alt or a function-key preset and it takes
@@ -34,7 +37,37 @@ Open **Doubao Say** from your application launcher:
    the app and overlay; this rehearsal never pastes or sends Enter. When it
    passes, choose **Finish setup** and use the trigger in another app.
 
+The trigger starts a short local audio pre-roll immediately so the first word is
+not lost. Audio is handed to the selected recognition service only after the tap
+or hold gesture is confirmed; a double-tap, Escape or cancelled gesture discards
+the unconfirmed buffer.
+
+### Optional official Volcengine recognition
+
+Open **Settings → Recognition service**, select **Volcengine official API**, and
+enter the API key issued by the Volcengine Speech Recognition console. Changes
+save automatically. Use **Test API key** before the voice test. This backend uses
+the Seed ASR 2.0 bidirectional streaming endpoint and the hourly resource
+`volc.seedasr.sauc.duration`; PCM audio is uploaded while you speak, incremental
+text is returned live, and the final result arrives after recording stops.
+Volcengine bills usage to your account.
+
+The API key is stored in `~/.config/doubao-say/volcengine_api_key` (or the
+equivalent `XDG_CONFIG_HOME` path) with owner-only permissions. It is never added
+to settings, diagnostics, logs, bundles, or reports. Clearing credentials removes
+the key. Service activation and project access are managed in the Volcengine
+console; an HTTP 401 from **Test API key** normally means that account-side access
+is not ready yet.
+
+See [Doubao and the official Volcengine speech API](docs/volcengine-asr.md) for
+backend differences, new-console activation, bidirectional streaming limitations,
+and troubleshooting.
+
 ### Optional voice polishing
+
+During polishing, a separate status row and softly pulsing stars sit above the
+transcript. A shortcut hint appears after three seconds; reduced motion keeps
+the stars static.
 
 Turn on the **Voice polishing · Experimental** switch on the Trigger key page to configure an
 OpenAI-compatible Base URL, API key, model and separate Chinese/English prompts.
@@ -42,10 +75,41 @@ Doubao Say selects a prompt from each transcript's dominant language. The bundle
 filler words and false starts, improves punctuation and organization, preserves
 meaning, and can be edited or restored to its default.
 
-Disable deep thinking/reasoning for this latency-sensitive task. **DeepSeek Flash
-(`deepseek-v4-flash`) is recommended.** Doubao Say requests non-thinking mode when
-using the official DeepSeek endpoint; with a gateway or another provider, confirm
-that thinking is disabled or select a non-reasoning model.
+### Choose a fast polishing model
+
+**Prefer a small, low-latency model with thinking disabled.** Polishing only needs
+light text correction, not deep reasoning. Large reasoning models are a poor
+default for this task: polishing has a five-second total budget, after which
+Doubao Say uses your original text. Small models can still think, and a
+Flash/Lite name does not guarantee that thinking is off or can be disabled.
+
+Start with one of these options on its official endpoint:
+
+| Model | Base URL | Automatic thinking control |
+| --- | --- | --- |
+| DeepSeek Flash (`deepseek-flash`) | `https://api.deepseek.com` | Requests `thinking: {"type": "disabled"}` |
+| Gemini 2.5 Flash-Lite (`gemini-2.5-flash-lite`) | `https://generativelanguage.googleapis.com/v1beta/openai` | Requests `reasoning_effort: "none"` |
+
+Gemini 2.5 Flash also has automatic thinking-off support. See the official
+[DeepSeek thinking guide](https://api-docs.deepseek.com/guides/thinking_mode/) and
+[Gemini OpenAI compatibility guide](https://ai.google.dev/gemini-api/docs/openai)
+for the provider parameters. These are configuration suggestions, not measured
+latency guarantees; network, service load, and text length also affect speed.
+Use **Test endpoint** to check connectivity, then try a short recording to assess
+actual polishing latency and quality.
+
+The settings page shows the thinking policy for your endpoint and model.
+Automatic control depends on the official hostname, not just the model name.
+For gateways or providers without a verified policy (including OpenAI, Claude,
+and Grok), confirm thinking is disabled in the provider configuration or choose
+a non-reasoning model; Doubao Say otherwise leaves provider defaults in place.
+Claude's native API is not supported by this OpenAI-compatible client.
+
+Zhipu (`open.bigmodel.cn`) standard and Coding Plan APIs request thinking-off,
+except for GLM-5.3 and GLM-5.3-Flash: these cannot disable thinking and request
+`reasoning_effort: "low"` instead. Low effort is still thinking, so these are not
+the preferred choices for this five-second workflow. See the
+[Zhipu thinking guide](https://docs.bigmodel.cn/cn/guide/capabilities/thinking).
 
 When enabled, 1.2 seconds of silence with stable recognized text starts provisional
 polishing. A separate status line stays visible while the overlay streams the result.
@@ -62,6 +126,41 @@ endpoint errors also safely fall back to it.
 The API key is stored separately with owner-only permissions and never appears in
 diagnostics. Use **Test endpoint** before enabling.
 
+### Desktop support
+
+| Desktop session | Automatic clipboard paste | Direct typing |
+| --- | --- | --- |
+| Hyprland / Wayland | `wl-copy`; known, unchanged window required | Optional `wtype` |
+| Native X11 | Optional `xclip` and `xdotool`; known, unchanged window/PID required | Unavailable; choose Clipboard paste |
+| Other Wayland compositors | Retain the result for manual copying when focus cannot be verified | No supported automatic path |
+
+Native X11 uses Ctrl+V, or Ctrl+Shift+V for recognized terminal classes. Its
+floating overlay does not request activation; the window manager chooses its
+position. Hyprland keeps its bottom-anchored layer-shell overlay. PipeWire
+microphone selection works through `pw-record` on both desktops.
+XWayland is not treated as a native X11 session. The X11 helpers are probed at
+runtime; without either one, recognition still works and the result is retained
+for manual copying.
+
+### Text input method
+
+Settings → Input → **Text input method** defaults to **Clipboard paste**,
+including for existing installations. Clipboard paste replaces the current
+clipboard contents; clipboard managers may save the recognized text in history.
+CopyQ is not required, and no clipboard restoration or history suppression is
+performed. Choose **Direct typing** on Hyprland to keep the clipboard unchanged.
+Install `wtype` separately; this mode requires a compatible
+Wayland virtual-keyboard implementation and has been tested on Hyprland.
+
+Direct typing sends characters gradually (about 8 seconds for 1,760 characters
+in our local test). Newlines and tabs act as Enter and Tab keys and can submit
+messages, execute terminal commands or move focus. Keep the target focused and
+avoid typing at the same time. Escape cancels remaining input; text already
+entered cannot be withdrawn. Focus changes stop further input on a best-effort
+basis. If direct typing fails or `wtype` is unavailable, the result stays in the
+app with no automatic clipboard fallback. Check for partial input before retrying.
+
+
 ## Gestures
 
 Default key: **Fn**. Change it to Ctrl, Shift, Alt, Meta, F8, F9, or Disabled.
@@ -74,7 +173,19 @@ Your keyboard must report Fn as a Linux key; otherwise choose another key.
 - Press the active trigger twice to send Enter without dictation. This can submit messages or execute terminal commands.
 - Configure the hold threshold, double-tap interval, Enter gesture and startup.
 
-The bottom overlay shows an audio-driven blue mirrored waveform and live text.
+The bottom overlay shows an audio-driven waveform and live text.
+Choose Classic bars, Soft waves, Concentric ripples, or Basketball rhythm
+under Settings → Appearance → Listening waveform. The basketball theme uses an
+fine wave strands that subtly form a dribbling figure and an orange ball.
+The figure stays at a fixed size with planted feet, a rhythmic rightward
+shoulder pop, and a hand that leads the bouncing ball. The phrase alternates
+anticipation, a fast downward push, a squashed impact, a shoulder snap with
+delayed head turn, a short hold and recovery.
+Dribbling speed follows an estimate of speech cadence from audio energy onsets,
+not volume or recognized words per minute. Pauses freeze the pose; volume only
+affects brightness. No solid character or ball outlines are drawn. Changes save automatically; use Preview appearance to try them.
+Classic bars remains the default. Reduced updates also stop travelling and
+bouncing motion in the new styles while retaining volume feedback.
 Final text is pasted after recording ends; target fields are not revised live.
 No green volume/progress bar is shown.
 The system tray waveform opens the existing app when clicked: blue when ready,
@@ -106,15 +217,19 @@ Escape is unchanged. Existing global Escape bindings are not replaced; a warning
 is shown if protection cannot be enabled. Other compositors currently only observe
 Escape and cannot prevent it reaching the foreground.
 Paste and Enter are serialized on a background worker so clipboard waits do not
-block the GTK interface. Cancellation stops remaining input; it cannot undo text
-or clipboard changes already delivered.
+block the GTK interface. Before clipboard paste, the app snapshots one primary
+MIME payload and restores its original bytes only if the clipboard still contains
+the dictation text. A copy made by the user during delivery is never overwritten.
+Cancellation stops remaining input and cannot undo text already delivered.
 Failed recognition can preserve partial text; failed paste preserves the result.
 This slot is memory-only, not a transcript history. Exiting loses it.
 
-Safe automatic paste currently requires a known, unchanged Hyprland window.
-Other compositors or an unknown target retain the result for manual copying.
-Focus is checked before paste and Enter, but Wayland cannot make that check and
-input delivery atomic. A sent paste shortcut is not proof that an app received it.
+Automatic paste requires a known, unchanged Hyprland or native X11 window.
+On X11, missing window metadata, a closed window or the app's own window prevents
+paste. Unsupported desktops or unknown targets retain the result for manual copying.
+Focus is checked before paste and Enter, but focus checks and input delivery are
+not atomic. Moving the caret inside the same window is not detected. A sent paste
+shortcut is not proof that an app received it.
 
 Settings includes hardware key capture with timeout/cancel, PipeWire microphone
 selection, lower-frequency waveform updates, account controls, and an allowlisted
@@ -125,8 +240,10 @@ Automatic detection of every desktop shortcut conflict is not supported.
 
 ## Privacy and limitations
 
-This unofficial client sends microphone audio to Doubao while recording and
-depends on its web protocol. The microphone-only check does not upload audio.
+After a recording gesture is confirmed, the default unofficial backend sends the
+locally buffered and live microphone audio to Doubao and depends on its web protocol.
+The optional official backend sends it to Volcengine under the user's API account
+and terms. Cancelled, double-tap and microphone-only checks do not upload audio.
 The hosted sign-in website controls its own language.
 When optional polishing is enabled, recognized text—including provisional text
 sent after a pause—is transmitted to the OpenAI-compatible endpoint configured by
@@ -136,6 +253,13 @@ GitHub receives the usual connection metadata. The cached release tag and check
 time contain no account, transcript or device identifier.
 
 Keyboard access and `/dev/uinput` permissions are required. Do not run the app as root.
+Vibekey support is optional and off by default. When enabled in Settings, its three
+transmitter buttons map to recording, Enter and cancel. Turning the dial right or
+left sends Down or Up by default, and pressing it sends Meta+Backspace. All six
+controls can keep their default or record a different keyboard shortcut in Settings;
+the mapping controls stay hidden while Vibekey support is off. Its narrowly scoped
+udev rule is documented in [the installation guide](packaging/INSTALL.md). No
+Vibekey software dependency is required.
 Settings and sign-in
 data are kept separately from installed files. Never publish credential files,
 personal transcripts, recordings, or logs. The release builder uses an explicit
@@ -196,7 +320,9 @@ when available and otherwise uses `sudo pacman -S --needed` on Arch.
 
 Keep this checkout in place: its desktop launcher points to it. Enable standalone
 startup in Settings only if the Omarchy plugin is disabled. For other distributions,
-resolve equivalent system packages first; automatic paste currently targets Hyprland.
+resolve equivalent system packages first; automatic paste targets Hyprland and native X11.
+Run installation checks from the desktop session you intend to use so the correct
+clipboard and GTK backend dependencies are selected.
 
 **App or plugin release archive:**
 
@@ -236,17 +362,35 @@ full lifecycle and recovery instructions.
 
 ## Development and local packaging
 
+Development and AI-assisted work follow [DEVELOPMENT.md](DEVELOPMENT.md) and
+[CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes require reproducible verification
+and before/after screenshots for each UI verification round, with test or log
+evidence for behavior that screenshots cannot prove. Report any unverified scope.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for `make check`,
 [security reporting](SECURITY.md), and
 [changes](CHANGELOG.md). The legacy Debian scripts are not the release path for
 this candidate and have not passed the new installer acceptance.
 
 ```sh
-PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
+make test
 .venv/bin/python -m compileall -q src/doubao_input packaging
 .venv/bin/python -m pip wheel -w dist/wheelhouse -r packaging/runtime-requirements.txt
 python3 packaging/build-release.py
 ```
+
+Native X11's opt-in desktop test creates a disposable Xephyr/XFWM session and
+checks Unicode/multiline paste, terminal shortcuts, cancellation, focus changes
+and overlay focus. It uses a separate clipboard without CopyQ; optional PyQt6 and
+Electron fixtures extend toolkit coverage. Avoid typing during the test:
+
+```sh
+timeout --kill-after=5s 50s env PYTHONPATH=src python3 tests/manual/x11.py --run
+```
+
+This requires Xephyr, xfwm4, xfce4-terminal, xdotool, xclip and `/dev/uinput` access.
+Real microphone dictation, other window managers and Hyprland acceptance remain
+separate checks.
 
 Archives are local artifacts, not published releases. Validate both installation
 and real desktop workflows before distributing them. No GitHub upload is performed
@@ -260,11 +404,11 @@ validate package metadata and scan for secrets. The current whole-package branch
 coverage floor is 55%; desktop UI, WebKit and real-device paths remain included
 in the denominator.
 
-The first release version is **1.0.0**. A `v1.0.0` tag must match every embedded
+The current release version is **1.2.0**. A `v1.2.0` tag must match every embedded
 version before CI can publish. Tag releases rebuild both offline app and Omarchy
 plugin archives for Python 3.11–3.14 and attach SHA-256 checksums. A manually started
 release workflow builds artifacts for inspection but does not publish them. Real
-login, microphone, global-key and Wayland behavior still require the manual checklist.
+login, microphone, global-key and desktop behavior still require the manual checklist.
 
 ## Credits and licensing
 

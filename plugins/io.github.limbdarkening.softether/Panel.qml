@@ -29,7 +29,23 @@ Panel {
 
 
 
-  readonly property var displayAccounts: Model.sortAccounts(vpn.accounts, customOrder)
+  readonly property var displayAccounts: Model.sortAccounts(vpn.savedAccounts, customOrder)
+
+  readonly property var savedIpsMap: {
+    var map = Object.create(null)
+    var accounts = vpn.savedAccounts
+    for (var i = 0; i < accounts.length; i++) {
+      var s = accounts[i].server
+      if (s) {
+        var colon = s.indexOf(":")
+        var host = (colon !== -1 ? s.substring(0, colon) : s).trim()
+        if (host.length > 0) {
+          map[host] = true
+        }
+      }
+    }
+    return map
+  }
 
   property bool dragActive: false
   property int dragSourceIndex: -1
@@ -42,6 +58,7 @@ Panel {
   property var pendingAccount: null
   property string confirmMessage: ""
   property string confirmButtonText: "Connect"
+  property string renameAccountTarget: ""
 
   property bool showOnlineNodes: false
   property string selectedOnlineCountry: ""
@@ -52,8 +69,13 @@ Panel {
   property bool countryPopupOpen: false
 
   readonly property var countryList: Model.getCountryList(vpn.onlineNodes)
-  readonly property string activeServerIp: (vpn.activeAccount && vpn.activeAccount.server)
-    ? vpn.activeAccount.server.split(":")[0].trim() : ""
+  readonly property string activeServerIp: {
+    var acc = vpn.activeAccount
+    if (!acc || !acc.server) return ""
+    var s = acc.server
+    var colon = s.indexOf(":")
+    return (colon !== -1 ? s.substring(0, colon) : s).trim()
+  }
   readonly property var filteredOnlineNodes: Model.filterAndSortOnlineNodes(
     vpn.onlineNodes, selectedOnlineCountry, onlineSortField, onlineSortAsc, activeServerIp)
 
@@ -67,8 +89,15 @@ Panel {
   readonly property bool isVpnConnected: vpn.connectedAccount !== null
   readonly property string selectedFlag: vpn.selectedAccount
     ? String(vpn.selectedAccount.flag || "🏳") : "🏳"
-  readonly property string connectedFlag: vpn.connectedAccount
-    ? String(vpn.connectedAccount.flag || "🏳") : selectedFlag
+  readonly property string connectedFlag: {
+    if (vpn.connectedAccount) {
+      if (vpn.connectedAccount.name === "VPNGate_Direct" && vpn.directConnectedNode) {
+        return String(vpn.directConnectedNode.flag || "🏳")
+      }
+      return String(vpn.connectedAccount.flag || "🏳")
+    }
+    return selectedFlag
+  }
   readonly property color iconColor: {
     if (vpn.state === "error" || vpn.state === "warning") return urgent
     if (vpn.state === "off") return Qt.darker(barForeground, 1.55)
@@ -105,7 +134,68 @@ Panel {
     }
   }
 
+  function locateConnectedAccount() {
+    var active = vpn.connectedAccount || vpn.activeAccount
+    if (!active || active.name === "VPNGate_Direct") return
+    var targetName = active.name
+    var list = root.displayAccounts
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].name === targetName) {
+        root.cursorActive = true
+        root.accountIndex = i
+        var item = accountsRepeater.itemAt(i)
+        if (item) {
+          var itemTop = accountsColumn.mapToItem(scrollColumn, 0, item.y).y
+          var targetY = itemTop - (flickable.height - item.height) / 2
+          var maxY = Math.max(0, flickable.contentHeight - flickable.height)
+          flickableScrollAnim.stop()
+          flickableScrollAnim.from = flickable.contentY
+          flickableScrollAnim.to = Math.max(0, Math.min(maxY, targetY))
+          flickableScrollAnim.restart()
+        }
+        break
+      }
+    }
+  }
+
+  function locateConnectedOnlineNode() {
+    if (!root.activeServerIp) return
+    var foundIndex = -1
+    for (var i = 0; i < root.filteredOnlineNodes.length; i++) {
+      var n = root.filteredOnlineNodes[i]
+      if (n.ip === root.activeServerIp || n.hostname === root.activeServerIp) {
+        foundIndex = i
+        break
+      }
+    }
+    if (foundIndex < 0 && root.selectedOnlineCountry !== "") {
+      root.selectedOnlineCountry = ""
+      root.selectedOnlineCountryName = "All"
+      root.selectedOnlineCountryFlag = ""
+      foundIndex = 0
+    }
+    if (foundIndex >= 0) {
+      var item = onlineNodesRepeater.itemAt(foundIndex)
+      if (item) {
+        var itemTop = onlineAccountsColumn.mapToItem(scrollColumn, 0, item.y).y
+        var targetY = itemTop - (flickable.height - item.height) / 2
+        var maxY = Math.max(0, flickable.contentHeight - flickable.height)
+        flickableScrollAnim.stop()
+        flickableScrollAnim.from = flickable.contentY
+        flickableScrollAnim.to = Math.max(0, Math.min(maxY, targetY))
+        flickableScrollAnim.restart()
+      } else {
+        flickableScrollAnim.stop()
+        flickableScrollAnim.from = flickable.contentY
+        flickableScrollAnim.to = 0
+        flickableScrollAnim.restart()
+      }
+    }
+  }
+
+
   function activateCursor() {
+    if (renameDialog.opened || vpn.renaming || vpn.busy) return
     var account = selectedRow()
     if (account) chooseAccount(account)
   }
@@ -116,7 +206,8 @@ Panel {
       pendingAction = ""
       pendingAccount = null
     }
-    if (!vpn.settingsValid || !vpn.serviceAvailable || vpn.accounts.length === 0) return
+    if (!vpn.settingsValid || !vpn.serviceAvailable) return
+    if (root.displayAccounts.length === 0 && !vpn.directConnectedNode && !vpn.activeAccount) return
     if ((vpn.busy && vpn.actionKind === "disconnect") || vpn.desiredState === 0) return
 
     var isConnectingOrConnected = vpn.active
@@ -133,7 +224,7 @@ Panel {
   }
 
   function chooseAccount(account) {
-    if (!account) return
+    if (!account || renameDialog.opened || vpn.renaming || vpn.busy) return
     var isCurrent = (vpn.connectedAccount && vpn.connectedAccount.name === account.name)
       || (vpn.activeAccount && vpn.activeAccount.name === account.name)
     if (isCurrent) {
@@ -158,13 +249,7 @@ Panel {
 
   function isNodeSaved(ip) {
     if (!ip) return false
-    var cleanIp = String(ip).trim()
-    for (var i = 0; i < vpn.accounts.length; i++) {
-      var acc = vpn.accounts[i]
-      var host = (acc.server || "").split(":")[0].trim()
-      if (host === cleanIp) return true
-    }
-    return false
+    return root.savedIpsMap[String(ip).trim()] === true
   }
 
   function chooseOnlineNode(node) {
@@ -198,6 +283,30 @@ Panel {
     confirmButtonText = "Delete"
     confirmDialog.selectedIndex = 1
     confirmDialog.opened = true
+  }
+
+  function requestRenameAccount(account) {
+    if (!account || !account.name || vpn.busy) return
+    var existing = []
+    for (var i = 0; i < vpn.accounts.length; i++) {
+      existing.push(vpn.accounts[i].name)
+    }
+    renameAccountTarget = account.name
+    renameDialog.open(account.name, existing)
+  }
+
+  function onAccountRenamed(oldName, newName) {
+    if (root.customOrder && root.customOrder.length > 0) {
+      var next = []
+      for (var i = 0; i < root.customOrder.length; i++) {
+        if (root.customOrder[i] === oldName) {
+          next.push(newName)
+        } else {
+          next.push(root.customOrder[i])
+        }
+      }
+      persistAccountOrder(next)
+    }
   }
 
   function removeAccountFromOrder(name) {
@@ -309,6 +418,7 @@ Panel {
     }
     cursorActive = false
     confirmDialog.opened = false
+    renameDialog.close()
     countryPopupOpen = false
     dragActive = false
     pendingAction = ""
@@ -323,6 +433,7 @@ Panel {
     })
   } else {
     confirmDialog.opened = false
+    renameDialog.close()
     countryPopupOpen = false
     dragActive = false
     pendingAction = ""
@@ -338,6 +449,7 @@ Panel {
   Connections {
     target: vpn
     function onAccountsChanged() { root.clampIndex() }
+    function onAccountRenamed(oldName, newName) { root.onAccountRenamed(oldName, newName) }
     function onImportCompleted(success, message) {
       if (success) {
         root.open()
@@ -417,6 +529,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      blocked: renameDialog.opened || vpn.renaming || vpn.busy
       onMoveRequested: function(dx, dy) {
         if (confirmDialog.opened) {
           confirmDialog.selectedIndex = confirmDialog.selectedIndex === 0 ? 1 : 0
@@ -433,11 +546,15 @@ Panel {
         root.activateCursor()
       }
       onDeleteRequested: {
-        if (confirmDialog.opened) return
+        if (confirmDialog.opened || renameDialog.opened) return
         var row = root.selectedRow()
         if (row) root.requestDeleteAccount(row)
       }
       onCloseRequested: {
+        if (renameDialog.opened) {
+          renameDialog.close()
+          return
+        }
         if (root.countryPopupOpen) {
           root.countryPopupOpen = false
           return
@@ -493,7 +610,7 @@ Panel {
               || (vpn.busy && vpn.actionKind === "connect")
               || vpn.desiredState === 1
             busy: !vpn.serviceAvailable
-              || vpn.accounts.length === 0
+              || (root.displayAccounts.length === 0 && !vpn.directConnectedNode && !vpn.activeAccount)
               || vpn.desiredState === 0
               || (vpn.busy && vpn.actionKind !== "connect")
               || vpn.importing
@@ -506,7 +623,7 @@ Panel {
             PanelToolTip {
               visible: powerSwitch.containsMouse
               text: !vpn.serviceAvailable ? "SoftEther client service is stopped"
-                : (vpn.accounts.length === 0 ? "No imported VPN profiles"
+                : (root.displayAccounts.length === 0 && !vpn.directConnectedNode && !vpn.activeAccount ? "No imported VPN profiles"
                 : (powerSwitch.checked ? "Disconnect VPN" : "Connect to VPN"))
               fontFamily: root.fontFamily
             }
@@ -518,9 +635,18 @@ Panel {
 
             Text {
               Layout.fillWidth: true
-              text: (vpn.activeAccount ? (vpn.activeAccount.flag || "🏳") : root.selectedFlag) + "  "
-                + (vpn.activeAccount ? (vpn.activeAccount.name || vpn.activeAccount.country)
-                  : (vpn.selectedAccount ? (vpn.selectedAccount.name || vpn.country) : vpn.country))
+              text: {
+                var act = vpn.activeAccount
+                if (act) {
+                  var flag = act.flag || "🏳"
+                  var name = vpn.displayNameForAccount(act)
+                  return flag + "  " + name
+                }
+                var sel = vpn.selectedAccount
+                var sFlag = sel ? (sel.flag || "🏳") : root.selectedFlag
+                var sName = sel ? (sel.name || vpn.country) : vpn.country
+                return sFlag + "  " + sName
+              }
               textFormat: Text.PlainText
               color: root.foreground
               font.family: root.fontFamily
@@ -558,6 +684,37 @@ Panel {
           foreground: root.foreground
         }
 
+        RowLayout {
+          id: savedFixedHeader
+          visible: !root.showOnlineNodes
+          width: parent.width
+          spacing: Style.space(6)
+
+          PanelSectionHeader {
+            text: "SAVED NODES"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            Layout.alignment: Qt.AlignVCenter
+          }
+
+          PanelActionButton {
+            id: locateSavedNodeBtn
+            enabled: (vpn.connectedAccount !== null || vpn.activeAccount !== null) && root.displayAccounts.length > 0 && !(vpn.activeAccount && vpn.activeAccount.name === "VPNGate_Direct")
+            opacity: enabled ? 1.0 : 0.35
+            iconText: "󰍎"
+            tooltipText: enabled ? "Locate connected node" : (vpn.activeAccount && vpn.activeAccount.name === "VPNGate_Direct" ? "Connected to online node (not saved)" : "No VPN node connected")
+            foreground: root.dim
+            hoverColor: Color.accent
+            fontFamily: root.fontFamily
+            Layout.alignment: Qt.AlignVCenter
+            onClicked: root.locateConnectedAccount()
+          }
+
+          Item {
+            Layout.fillWidth: true
+          }
+        }
+
         Column {
           id: onlineFixedHeader
           visible: root.showOnlineNodes
@@ -566,6 +723,7 @@ Panel {
 
           RowLayout {
             width: parent.width
+            spacing: Style.space(6)
 
             Text {
               text: "VPN GATE NODES" + (root.filteredOnlineNodes.length > 0 ? " (" + root.filteredOnlineNodes.length + ")" : "")
@@ -574,6 +732,23 @@ Panel {
               font.pixelSize: Style.font.caption
               font.bold: true
               font.letterSpacing: 1.0
+              Layout.alignment: Qt.AlignVCenter
+            }
+
+            PanelActionButton {
+              id: locateOnlineNodeBtn
+              enabled: (vpn.connectedAccount !== null || vpn.activeAccount !== null) && root.activeServerIp !== ""
+              opacity: enabled ? 1.0 : 0.35
+              iconText: "󰍎"
+              tooltipText: enabled ? "Locate connected node" : "No VPN node connected"
+              foreground: root.dim
+              hoverColor: Color.accent
+              fontFamily: root.fontFamily
+              Layout.alignment: Qt.AlignVCenter
+              onClicked: root.locateConnectedOnlineNode()
+            }
+
+            Item {
               Layout.fillWidth: true
             }
 
@@ -585,6 +760,7 @@ Panel {
               hoverColor: root.foreground
               fontFamily: root.fontFamily
               enabled: !vpn.fetchingOnline
+              Layout.alignment: Qt.AlignVCenter
               onClicked: vpn.fetchOnlineNodes(true)
 
               NumberAnimation on rotation {
@@ -792,8 +968,17 @@ Panel {
         flickableDirection: Flickable.VerticalFlick
         interactive: contentHeight > height && !root.dragActive
         onContentXChanged: if (contentX !== 0) contentX = 0
+        onMovementStarted: flickableScrollAnim.stop()
 
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        NumberAnimation {
+          id: flickableScrollAnim
+          target: flickable
+          property: "contentY"
+          duration: 200
+          easing.type: Easing.OutCubic
+        }
 
         Column {
           id: scrollColumn
@@ -805,12 +990,6 @@ Panel {
             visible: !root.showOnlineNodes
             width: parent.width
             spacing: Style.space(12)
-
-            PanelSectionHeader {
-              text: "SAVED NODES"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
 
             Text {
               visible: vpn.serviceAvailable && vpn.accounts.length === 0
@@ -851,10 +1030,12 @@ Panel {
                   readonly property bool selectedAccount: vpn.selectedAccountName === account.name
                   readonly property bool connectedAccount: account.statusKind === "connected" || account.statusKind === "connecting"
                   readonly property bool isDragging: root.dragActive && root.dragSourceIndex === index
+                  property bool actionsHovered: false
+                  readonly property bool rowHovered: (rowMouse.containsMouse || actionsHovered) && !root.dragActive
 
                   width: parent.width
                   implicitHeight: rowContent.implicitHeight + Style.spacing.rowPaddingX
-                  hasCursor: (root.cursorActive && root.accountIndex === index) || isDragging
+                  hasCursor: (rowHovered && !selectedAccount) || (root.cursorActive && root.accountIndex === index) || isDragging
                   current: selectedAccount || isDragging
                   foreground: root.foreground
                   z: isDragging ? 100 : 1
@@ -899,8 +1080,14 @@ Panel {
 
                     onEntered: {
                       if (!root.dragActive) {
-                        root.cursorActive = true
+                        root.cursorActive = false
                         root.accountIndex = accountRow.index
+                      }
+                    }
+
+                    onExited: {
+                      if (!root.dragActive) {
+                        root.cursorActive = false
                       }
                     }
 
@@ -985,15 +1172,20 @@ Panel {
                       }
                     }
 
-                    Text {
-                      opacity: accountRow.selectedAccount ? 1.0 : 0.0
-                      text: "✓"
-                      textFormat: Text.PlainText
-                      color: root.foreground
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.body
-                      font.bold: true
+                    PanelActionButton {
+                      id: renameButton
+                      visible: !root.dragActive
+                      enabled: !vpn.busy
+                      iconText: "󰏫"
+                      tooltipText: "Rename node"
+                      foreground: root.dim
+                      hoverColor: root.foreground
+                      fontFamily: root.fontFamily
                       Layout.alignment: Qt.AlignVCenter
+                      onHovered: function(isHovered) {
+                        accountRow.actionsHovered = isHovered
+                      }
+                      onClicked: root.requestRenameAccount(accountRow.account)
                     }
 
                     PanelActionButton {
@@ -1006,6 +1198,9 @@ Panel {
                       hoverColor: root.urgent
                       fontFamily: root.fontFamily
                       Layout.alignment: Qt.AlignVCenter
+                      onHovered: function(isHovered) {
+                        accountRow.actionsHovered = isHovered
+                      }
                       onClicked: root.requestDeleteAccount(accountRow.account)
                     }
                   }
@@ -1067,6 +1262,7 @@ Panel {
             }
 
             Column {
+              id: onlineAccountsColumn
               width: parent.width
               spacing: Style.space(6)
 
@@ -1080,14 +1276,18 @@ Panel {
                   required property int index
                   property var node: modelData
                   readonly property bool isNodeActive: root.activeServerIp !== "" && (node.ip === root.activeServerIp || node.hostname === root.activeServerIp)
-                  readonly property bool alreadySaved: root.isNodeSaved(node.ip)
+                  readonly property bool alreadySaved: root.savedIpsMap[node.ip] === true
+                  property bool actionHovered: false
+                  readonly property bool onlineHovered: onlineMouse.containsMouse || actionHovered
 
                   width: parent.width
                   implicitHeight: onlineRowContent.implicitHeight + Style.spacing.rowPaddingX
                   foreground: root.foreground
+                  hasCursor: onlineHovered && !isNodeActive
                   current: isNodeActive
 
                   MouseArea {
+                    id: onlineMouse
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
@@ -1130,8 +1330,8 @@ Panel {
                       Text {
                         Layout.fillWidth: true
                         text: onlineRow.node.speedText + " · " + onlineRow.node.ping + " ms · "
-                          + onlineRow.node.sessions + " users · " + onlineRow.node.uptimeText + " · "
-                          + onlineRow.node.ip + ":" + onlineRow.node.port
+                        + onlineRow.node.sessions + " users · " + onlineRow.node.uptimeText + " · "
+                        + onlineRow.node.ip + ":" + onlineRow.node.port
                         textFormat: Text.PlainText
                         color: root.dim
                         font.family: root.fontFamily
@@ -1149,7 +1349,10 @@ Panel {
                       hoverColor: Color.accent
                       fontFamily: root.fontFamily
                       Layout.alignment: Qt.AlignVCenter
-                      onClicked: vpn.addOnlineNode(onlineRow.node, false)
+                      onHovered: function(isHovered) {
+                        onlineRow.actionHovered = isHovered
+                      }
+                      onClicked: vpn.addOnlineNode(onlineRow.node)
                     }
 
                     PanelActionButton {
@@ -1460,6 +1663,29 @@ Panel {
           }
           root.pendingAction = ""
           root.pendingAccount = null
+        }
+      }
+
+      Local.RenameDialog {
+        id: renameDialog
+        anchors.fill: parent
+        z: 125
+        opened: false
+        background: root.bar ? root.bar.background : Color.background
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        cornerRadius: Style.cornerRadius
+        accent: Color.accent
+        onCanceled: function() {
+          Qt.callLater(function() {
+            keyCatcher.forceActiveFocus()
+          })
+        }
+        onConfirmed: function(newName) {
+          vpn.renameAccount(root.renameAccountTarget, newName)
+          Qt.callLater(function() {
+            keyCatcher.forceActiveFocus()
+          })
         }
       }
     }

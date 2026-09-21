@@ -1,8 +1,27 @@
 # Contributing
 
-This is an unofficial Doubao-only Linux client. Do not add a second recognition
-engine, embed credentials or depend on personal Hyprland configuration.
+This is a Linux voice-input client with a Doubao web-account backend and an
+optional official Volcengine Seed ASR backend. Do not add further recognition
+engines, embed credentials or depend on personal Hyprland configuration.
 There is no published repository/release for this revision yet.
+
+## Agent workflow and bug evidence
+
+Read [DEVELOPMENT.md](DEVELOPMENT.md) before making changes. For every bug verification
+round, reproduce the problem before editing, retain before/after screenshots,
+and repeat the same scenario after the fix. Use real application captures for
+UI changes; supplement screenshots with assertions or sanitized logs for focus,
+paste, audio, and background behavior. Record missing evidence or unavailable
+runtime checks explicitly; previews do not establish end-to-end acceptance.
+For bugs without a UI, record why screenshots do not apply and retain failing
+and passing test or log evidence instead.
+
+Store each round under `artifacts/verification/<task>/<round>/`, including a
+`verification.md` with the source revision, local changes, environment, steps,
+commands, exit codes, results, and evidence paths. Inspect the captures and link
+before/after images in the handoff. These local artifacts are ignored by Git;
+include a durable verification summary and sanitized attachments when sharing
+an issue or PR. See DEVELOPMENT.md for the complete workflow.
 
 ## Development
 
@@ -19,17 +38,24 @@ make check
 ```
 
 Tests use temporary fake credentials. Unit tests must not record audio, access
-Doubao, send keyboard events or alter desktop configuration. Files named
-`manual_*.py` are opt-in live tests, never normal CI. Stop recording before any
-lifecycle test. Stop the normal app/plugin before fresh-login/onboarding tests;
-they share the production application ID to prevent duplicate overlays.
+Doubao, send keyboard events or alter desktop configuration. Files under
+`tests/manual/` are opt-in live checks, never normal CI. The complete test
+layout is documented in `tests/README.md`. Stop recording before any lifecycle
+test. Stop the normal app/plugin before fresh-login/onboarding tests; they share
+the production application ID to prevent duplicate overlays.
+
+Midscene desktop E2E is a separate suite and is not included in `make check`.
+See [the test guide](tests/README.md#midscene-desktop-e2e) for prerequisites,
+commands, synthetic-fixture limitations, and HTML replay evidence. Extend the
+relevant scenario when fixing a covered user-visible flow.
 
 ## Change boundaries
 
 - Audio callbacks run off-thread. Marshal GTK updates onto the GLib main loop.
 - Use AudioCapture's callback parameters, not private-field mutation or monkey patches.
 - Keep gesture timing independent of GTK so deterministic tests cover edge cases.
-- Persist credentials through ParamsStore; failure must not report login success.
+- Persist web credentials through ParamsStore and official API keys through the
+  owner-only VolcengineCredentialsStore; failure must not report readiness.
 - English is the default. Add English/Chinese UI strings together; preserve explicit
   language choices and document startup-only System locale resolution.
 - Preserve user configuration and upstream changes. Do not restart active recordings.
@@ -53,9 +79,9 @@ For marketplace preparation, use `make marketplace-check` with Gitleaks on PATH
 and follow [the publishing checklist](packaging/MARKETPLACE.md). Reports and local
 review drafts belong in ignored `artifacts/` and `docs/`, not in release payloads.
 
-The first public version is `1.0.0`. Keep `pyproject.toml`, `manifest.json` and
+The current public version is `1.2.0`. Keep `pyproject.toml`, `manifest.json` and
 `src/doubao_input/product.py` aligned; `python packaging/version_check.py` verifies
-them. A pushed tag such as `v1.0.0` runs all checks and secret scanning, builds app
+them. A pushed tag such as `v1.2.0` runs all checks and secret scanning, builds app
 and plugin archives for every supported Python version, creates `SHA256SUMS`, and
 publishes the GitHub Release. `workflow_dispatch` performs a non-publishing build.
 # Bounded desktop tests
@@ -64,11 +90,11 @@ Always run opt-in desktop tests with a process-level timeout, for example:
 
 ```sh
 GTK_A11Y=none PYTHONPATH=src timeout --signal=TERM --kill-after=5s 35s \
-  dbus-run-session -- .venv/bin/python tests/manual_refactor_smoke.py
+  dbus-run-session -- .venv/bin/python tests/manual/refactor_smoke.py
 ```
 
 The smoke test also bounds event draining and has a 30-second kernel alarm.
 Do not drain GTK with an unbounded `while context.pending()` loop: recurring
-sources may keep the queue ready forever. Use `tests/manual_safety.py` and register
+sources may keep the queue ready forever. Use `tests/manual/safety.py` and register
 cleanup before assertions. Confirm the test process has exited after every run;
 a passing message alone is insufficient. A hard timeout is a failed test.

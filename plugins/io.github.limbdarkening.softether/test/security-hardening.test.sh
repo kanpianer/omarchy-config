@@ -51,6 +51,14 @@ if $control disconnect 'Test VPN Germany' 'SoftEther VPN Network' 'adapter/name'
   printf 'unsafe adapter name was accepted\n' >&2
   exit 1
 fi
+if $control rename '<b>unsafe</b>' 'Valid Name' >/dev/null 2>&1; then
+  printf 'unsafe account name was accepted in rename\n' >&2
+  exit 1
+fi
+if $control rename 'Valid Name' '<b>unsafe</b>' >/dev/null 2>&1; then
+  printf 'unsafe new account name was accepted in rename\n' >&2
+  exit 1
+fi
 
 if FAKE_OVERSIZED_OUTPUT=1 $control accounts >/dev/null 2>&1; then
   printf 'oversized command output was accepted\n' >&2

@@ -11,6 +11,7 @@ Key design decisions:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from gi.repository import GLib
@@ -26,7 +27,8 @@ from doubao_input.i18n import tr
 MIN_PRESS_DURATION = 0.15  # seconds
 # Doubao sends several corrections after release. Commit only once that result
 # stream has stayed quiet briefly, matching the current upstream client.
-FINAL_RESULT_QUIET_PERIOD = 0.25
+FINAL_RESULT_QUIET_PERIOD = 0.5
+MAX_PREROLL_BYTES = 2 * 16000 * 2
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +36,14 @@ logger = logging.getLogger(__name__)
 class TranscriptionManager:
     """Orchestrates the recording lifecycle."""
 
-    def __init__(self, app_state: AppState) -> None:
+    def __init__(self, app_state: AppState, *, asr_client=None,
+                 credential_store=ParamsStore, interactive_auth=True,
+                 clear_rejected_credentials=True) -> None:
         self.app_state = app_state
-        self.asr_client = ASRClient()
+        self.asr_client = asr_client or ASRClient()
+        self.credential_store = credential_store
+        self.interactive_auth = interactive_auth
+        self.clear_rejected_credentials = clear_rejected_credentials
         self.audio_capture = AudioCapture()
 
         self.using_cached_params = False
@@ -46,6 +53,11 @@ class TranscriptionManager:
         self._press_started_at: float = 0.0
         self._generation = 0
         self._stopped_at = None
+        self._prime_lock = threading.Lock()
+        self._priming = False
+        self._primed_audio = []
+        self._primed_bytes = 0
+        self._audio_generation = 0
 
         # Callbacks set by app.py
         self.on_auth_expired = None  # () -> None
@@ -58,7 +70,21 @@ class TranscriptionManager:
         self.on_empty_complete = None  # () -> None; successful finish without text
         self.on_recover = None  # (partial_text) -> None, before a failed session resets
         self.on_cancel_enabled_changed = None  # (enabled: bool) -> None
+        self.on_diagnostic = None  # (allowlisted_stage: str) -> None
 
+        self._wire_asr_callbacks()
+
+    def configure_backend(self, asr_client, credential_store, *,
+                          interactive_auth, clear_rejected_credentials) -> None:
+        """Replace the idle recognition backend without replacing the state machine."""
+        if self.app_state.recording_state != RecordingState.IDLE:
+            raise RuntimeError("Cannot change recognition service while recording")
+        self._generation += 1
+        self.asr_client.disconnect()
+        self.asr_client = asr_client
+        self.credential_store = credential_store
+        self.interactive_auth = interactive_auth
+        self.clear_rejected_credentials = clear_rejected_credentials
         self._wire_asr_callbacks()
 
     def _wire_asr_callbacks(self) -> None:
@@ -83,6 +109,86 @@ class TranscriptionManager:
         return GLib.timeout_add(milliseconds, self._deliver, self._generation, callback)
 
     # --- Toggle ---
+
+    def prime_recording(self) -> bool:
+        """Capture locally before a tap/hold gesture is confirmed."""
+        if (self.app_state.login_status != LoginStatus.LOGGED_IN
+                or self.app_state.recording_state != RecordingState.IDLE):
+            return False
+        with self._prime_lock:
+            if self._priming:
+                return True
+            self._audio_generation += 1
+            audio_generation = self._audio_generation
+            self._priming = True
+            self._primed_audio = []
+            self._primed_bytes = 0
+        try:
+            self.audio_capture.start(
+                on_audio_data=self._capture_audio,
+                on_error=lambda error: GLib.idle_add(
+                    self._deliver_audio_error, audio_generation, error
+                ),
+            )
+            self._trace("audio_buffering")
+            return True
+        except Exception as error:
+            logger.error("Audio capture failed: %s", error)
+            self.discard_primed_audio()
+            self.app_state.error_message = tr(
+                "Microphone failed to start; check your input device and permissions",
+                "麦克风启动失败，请检查输入设备和权限")
+            return False
+
+    def _deliver_audio_error(self, generation, error):
+        if generation != self._audio_generation:
+            return GLib.SOURCE_REMOVE
+        if (not self._priming
+                and self.app_state.recording_state == RecordingState.IDLE):
+            return GLib.SOURCE_REMOVE
+        logger.error("Microphone stream failed: %s", error)
+        self._trace("audio_failed")
+        if self.on_recover and self.app_state.transcription_text.strip():
+            self.on_recover(self.app_state.transcription_text)
+        self._reset_to_idle()
+        self.app_state.error_message = tr(
+            "Microphone disconnected. Recording stopped; reconnect it and try again.",
+            "麦克风已断开，录音已停止；请重新连接后再试。",
+        )
+        return GLib.SOURCE_REMOVE
+
+    def _capture_audio(self, data: bytes) -> None:
+        with self._prime_lock:
+            if self._priming:
+                chunk = bytes(data)
+                self._primed_audio.append(chunk)
+                self._primed_bytes += len(chunk)
+                while self._primed_bytes > MAX_PREROLL_BYTES and self._primed_audio:
+                    self._primed_bytes -= len(self._primed_audio.pop(0))
+                return
+        self.asr_client.send_audio(data)
+
+    def _trace(self, stage):
+        if self.on_diagnostic:
+            self.on_diagnostic(stage)
+
+    def _commit_primed_audio(self) -> None:
+        with self._prime_lock:
+            for chunk in self._primed_audio:
+                self.asr_client.send_audio(chunk)
+            self._primed_audio = []
+            self._primed_bytes = 0
+            self._priming = False
+
+    def discard_primed_audio(self) -> None:
+        with self._prime_lock:
+            was_priming = self._priming
+            self._audio_generation += 1
+            self._priming = False
+            self._primed_audio = []
+            self._primed_bytes = 0
+        if was_priming and self.app_state.recording_state == RecordingState.IDLE:
+            self.audio_capture.stop()
 
     def handle_toggle(self) -> None:
         """Called on GTK main thread from hotkey manager.
@@ -119,12 +225,17 @@ class TranscriptionManager:
 
     def _start_recording(self) -> None:
         if self.app_state.login_status != LoginStatus.LOGGED_IN:
+            self.discard_primed_audio()
             logger.warning("Not logged in, showing login window")
             if self.on_show_login:
                 self.on_show_login()
             return
 
+        if not self.prime_recording():
+            return
+
         logger.info("Starting recording...")
+        self._trace("gesture_confirmed")
         self._generation += 1
         self._stopped_at = None
         self._wire_asr_callbacks()
@@ -135,30 +246,32 @@ class TranscriptionManager:
         if self.on_overlay_show:
             self.on_overlay_show()
 
-        # Start audio immediately (buffered in ASR client until WS connects)
-        try:
-            self.audio_capture.start(on_audio_data=self.asr_client.send_audio)
-        except Exception as e:
-            logger.error("Audio capture failed: %s", e)
-            self._reset_to_idle()
-            self.app_state.error_message = tr("Microphone failed to start; check your input device and permissions",
-                                              "麦克风启动失败，请检查输入设备和权限")
-            return
+        # Only confirmed gestures move locally buffered PCM into the ASR queue.
+        # New capture callbacks cannot overtake the pre-roll while this lock is held.
+        self._commit_primed_audio()
 
-        # Try cached params first, fall back to WebView extraction
-        cached = ParamsStore.load()
+        # Try provider credentials first. Only the web-account provider can
+        # recover missing credentials through WebView extraction.
+        try:
+            cached = self.credential_store.load()
+        except (OSError, ValueError):
+            logger.warning("Saved recognition credentials could not be read")
+            cached = None
         if cached:
-            logger.info("Using cached ASR params")
+            logger.info("Using saved recognition credentials")
             self.using_cached_params = True
             self.asr_client.connect(cached)
-        elif self.on_params_needed:
+            self._trace("connection_requested")
+        elif self.interactive_auth and self.on_params_needed:
             self.using_cached_params = False
             generation = self._generation
             self.on_params_needed(lambda params: self._deliver(
                 generation, self._on_params_extracted, (params,)))
         else:
             self._reset_to_idle()
-            self.app_state.error_message = tr("Could not connect; please sign in again", "无法获取连接参数，请重新登录")
+            self.app_state.error_message = tr(
+                "Configure recognition credentials in Settings and try again",
+                "请在设置中配置语音识别凭证后重试")
 
     def _stop_recording(self) -> None:
         logger.info("Stopping recording...")
@@ -170,6 +283,7 @@ class TranscriptionManager:
             self._on_asr_error(error)
             return
         self.asr_client.finish_sending()
+        self._trace("audio_drained")
         self.awaiting_final_result = True
 
         # Safety timeout
@@ -185,6 +299,7 @@ class TranscriptionManager:
         self.safety_timer_id = None
         if self.app_state.recording_state == RecordingState.STOPPING:
             logger.warning("Recognition timed out; retaining partial text without submitting")
+            self._trace("timed_out")
             if self.on_recover and self.app_state.transcription_text.strip():
                 self.on_recover(self.app_state.transcription_text)
             self._reset_to_idle()
@@ -197,11 +312,14 @@ class TranscriptionManager:
     # --- ASR callbacks (on GTK main thread via GLib.idle_add) ---
 
     def _on_asr_open(self) -> bool:
+        self._trace("connected")
         if self.app_state.recording_state == RecordingState.STARTING:
             self._set_state(RecordingState.RECORDING)
         return GLib.SOURCE_REMOVE
 
     def _on_asr_result(self, text: str) -> bool:
+        if not self.app_state.transcription_text:
+            self._trace("first_result")
         self.app_state.transcription_text = text
         if self.on_overlay_update:
             self.on_overlay_update(text)
@@ -212,6 +330,7 @@ class TranscriptionManager:
         return GLib.SOURCE_REMOVE
 
     def _on_asr_finish(self) -> bool:
+        self._trace("server_finished")
         self._cancel_final_result_timer()
         self.awaiting_final_result = False
         if self.app_state.recording_state in (
@@ -237,6 +356,7 @@ class TranscriptionManager:
                 self._schedule_final_completion()
                 return GLib.SOURCE_REMOVE
             logger.info("Result stream quiet, completing transcription")
+            self._trace("quiet_finished")
             self.awaiting_final_result = False
             self._complete_transcription()
         return GLib.SOURCE_REMOVE
@@ -250,6 +370,7 @@ class TranscriptionManager:
         if self.app_state.recording_state == RecordingState.IDLE:
             return GLib.SOURCE_REMOVE
         logger.error("ASR request failed")
+        self._trace("failed")
         if self.on_recover and self.app_state.transcription_text.strip():
             self.on_recover(self.app_state.transcription_text)
         # NOTE: genuine auth failures arrive via `on_auth_error` -> `_on_auth_error`,
@@ -276,16 +397,22 @@ class TranscriptionManager:
         if text and self.on_paste:
             self.on_paste(text)
         elif not text and self.on_empty_complete:
+            self._trace("empty_result")
             self.on_empty_complete()
         self._reset_to_idle()
 
     def _reset_to_idle(self) -> bool:
         self._generation += 1
+        self._audio_generation += 1
         self._cancel_final_result_timer()
         if self.safety_timer_id is not None:
             GLib.source_remove(self.safety_timer_id)
             self.safety_timer_id = None
         self.awaiting_final_result = False
+        with self._prime_lock:
+            self._priming = False
+            self._primed_audio = []
+            self._primed_bytes = 0
         self.audio_capture.stop()
         self.asr_client.disconnect()
         self._set_state(RecordingState.IDLE)
@@ -298,8 +425,10 @@ class TranscriptionManager:
 
     def handle_cancel(self) -> None:
         if self.app_state.recording_state == RecordingState.IDLE:
+            self.discard_primed_audio()
             return
         logger.info("Cancelling transcription")
+        self._trace("cancelled")
         self.awaiting_final_result = False
         self.audio_capture.stop()
         self.asr_client.disconnect()
@@ -308,13 +437,14 @@ class TranscriptionManager:
     def _handle_auth_failure(self) -> None:
         if self.on_recover and self.app_state.transcription_text.strip():
             self.on_recover(self.app_state.transcription_text)
-        logger.warning("Auth failure, clearing cached params")
+        logger.warning("Recognition credentials were rejected")
         clear_failed = False
-        try:
-            ParamsStore.clear()
-        except OSError:
-            clear_failed = True
-            logger.warning("Could not remove expired credentials")
+        if self.clear_rejected_credentials:
+            try:
+                self.credential_store.clear()
+            except OSError:
+                clear_failed = True
+                logger.warning("Could not remove expired credentials")
         self.using_cached_params = False
         self.audio_capture.stop()
         self.asr_client.disconnect()
@@ -324,8 +454,8 @@ class TranscriptionManager:
             self.on_auth_expired()
         if clear_failed:
             self.app_state.error_message = tr(
-                "Sign-in expired, but saved credentials could not be removed. Check folder permissions.",
-                "登录已过期，但无法删除保存的凭证，请检查目录权限。")
+                "Credentials were rejected, but the saved value could not be removed. Check folder permissions.",
+                "凭证已被拒绝，但无法删除保存内容，请检查目录权限。")
 
     def _set_state(self, new_state: RecordingState) -> None:
         self.app_state.recording_state = new_state
@@ -336,7 +466,7 @@ class TranscriptionManager:
         """Called when WebView param extraction completes."""
         if params:
             try:
-                ParamsStore.save(params)
+                self.credential_store.save(params)
             except (OSError, ValueError):
                 self.audio_capture.stop()
                 self._reset_to_idle()
@@ -345,6 +475,7 @@ class TranscriptionManager:
                     "无法保存登录信息，请检查配置目录权限和磁盘空间。")
                 return
             self.asr_client.connect(params)
+            self._trace("connection_requested")
         else:
             self._reset_to_idle()
             self.app_state.error_message = tr("Could not connect; please sign in again", "无法获取连接参数，请重新登录")

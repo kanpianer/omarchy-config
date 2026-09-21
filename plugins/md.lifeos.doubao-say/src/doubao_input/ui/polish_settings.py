@@ -45,8 +45,8 @@ class PolishSettings(Gtk.Box):
         self.details.append(self._row("Base URL", self.base_url))
         self.details.append(self._row("Model", self.model))
         self.latency_guidance = Gtk.Label(xalign=0, wrap=True, label=tr(
-            "For faster results, use a non-reasoning model. Recommended: DeepSeek Flash (deepseek-v4-flash).",
-            "为了更快返回，请选择非推理模型。推荐：DeepSeek Flash（deepseek-v4-flash）。"))
+            "Choose a small, fast model and turn thinking off, even for Flash/Lite models. Try DeepSeek Flash (deepseek-flash) or Gemini 2.5 Flash-Lite (gemini-2.5-flash-lite) on their official endpoints; thinking-off is requested automatically. Large reasoning models may exceed the 5-second limit and fall back to your original text.",
+            "优先选择小型、低延迟模型，并关闭思考，Flash/Lite 模型也不例外。建议使用 DeepSeek Flash（deepseek-flash）或 Gemini 2.5 Flash-Lite（gemini-2.5-flash-lite）的官方接口，应用会自动请求关闭思考。大型推理模型可能超过五秒上限，导致回退原文。"))
         self.latency_guidance.add_css_class("dim-label")
         self.details.append(self.latency_guidance)
         self.reasoning_notice = Gtk.Label(xalign=0, wrap=True)
@@ -208,6 +208,7 @@ class PolishSettings(Gtk.Box):
         if self._testing:
             return
         if not self._save_now():
+            self._set_test_result(False)
             self.test_status.set_text(self.status.get_text() or tr(
                 "Check the endpoint settings and try again.",
                 "请检查接口设置后重试。"))
@@ -220,12 +221,12 @@ class PolishSettings(Gtk.Box):
             self.test_status.set_visible(True)
             self._test(settings, key, self._tested)
         except (ValueError, OSError) as error:
-            self._set_testing(False)
+            self._set_test_result(False)
             self.test_status.set_text(tr("Endpoint test failed: ", "接口测试失败：") + str(error))
             self.test_status.set_visible(True)
 
     def _tested(self, result, error):
-        self._set_testing(False)
+        self._set_test_result(not error)
         if error:
             message = tr("Endpoint test failed: ", "接口测试失败：") + error
         else:
@@ -236,5 +237,11 @@ class PolishSettings(Gtk.Box):
     def _set_testing(self, active):
         self._testing = active
         self.test_button.set_sensitive(not active)
-        self.test_button.set_label(tr("Testing…", "正在测试…") if active else
-                                   tr("Test endpoint", "测试接口"))
+        if active:
+            self.test_button.set_label(tr("Testing…", "正在测试…"))
+
+    def _set_test_result(self, success):
+        self._testing = False
+        self.test_button.set_sensitive(True)
+        self.test_button.set_label(tr("Endpoint works ✓", "接口可用 ✓") if success else
+                                   tr("Test failed — try again", "测试失败，可重试"))

@@ -1,5 +1,5 @@
 """Portable, versioned user preferences (no authentication data)."""
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 import json
 import os
 from pathlib import Path
@@ -10,6 +10,8 @@ from doubao_input.i18n import LANGUAGES, tr
 
 KEY_CHOICES = {"Disabled": 0, "Fn": 464, "Ctrl": 29, "Shift": 42,
                "Alt": 56, "Meta": 125, "F8": 66, "F9": 67}
+REMOVED_SETTING_FIELDS = frozenset({"polish_undo_modifier", "polish_prompt"})
+ASR_PROVIDERS = ("doubao", "volcengine")
 CAPTURABLE_KEY_CODES = frozenset(range(2, 249)) | {464}
 MODIFIER_KEY_CODES = frozenset({29, 42, 54, 56, 97, 100, 125, 126})
 EQUIVALENT_KEY_GROUPS = (
@@ -153,6 +155,11 @@ def write_atomic(path, data, mode=0o600):
             temporary.unlink(missing_ok=True)
 
 
+INPUT_METHODS = ("clipboard", "direct")
+
+WAVEFORM_STYLES = ("bars", "waves", "ripples", "basketball")
+
+
 @dataclass
 class Settings:
     version: int = 1
@@ -162,9 +169,25 @@ class Settings:
     hold_ms: int = 350
     double_ms: int = 300
     double_enter: bool = True
+    vibekey_enabled: bool = False
+    vibekey_record_key: int | None = None
+    vibekey_record_modifiers: tuple[int, ...] = ()
+    vibekey_enter_key: int | None = None
+    vibekey_enter_modifiers: tuple[int, ...] = ()
+    vibekey_cancel_key: int | None = None
+    vibekey_cancel_modifiers: tuple[int, ...] = ()
+    vibekey_clockwise_key: int = 108
+    vibekey_clockwise_modifiers: tuple[int, ...] = ()
+    vibekey_counterclockwise_key: int = 103
+    vibekey_counterclockwise_modifiers: tuple[int, ...] = ()
+    vibekey_press_key: int = 14
+    vibekey_press_modifiers: tuple[int, ...] = (125,)
+    input_method: str = "clipboard"
     autostart: bool = False
     microphone: str = ""
+    asr_provider: str = "doubao"
     reduced_motion: bool = False
+    waveform_style: str = "bars"
     polish_enabled: bool = False
     polish_base_url: str = "https://api.openai.com/v1"
     polish_model: str = "gpt-4o-mini"
@@ -173,10 +196,16 @@ class Settings:
     onboarding_complete: bool = False
 
     def validate(self):
+        if self.input_method not in INPUT_METHODS:
+            raise ValueError(tr("Unsupported input method", "不支持的输入方式"))
+        if self.waveform_style not in WAVEFORM_STYLES:
+            raise ValueError(tr("Unsupported waveform style", "不支持的波纹样式"))
         if self.language not in LANGUAGES:
             raise ValueError("Unsupported language")
         if not isinstance(self.microphone, str) or len(self.microphone) > 256 or any(c in self.microphone for c in '\n\r\x00'):
             raise ValueError(tr("Invalid microphone identifier", "麦克风标识无效"))
+        if self.asr_provider not in ASR_PROVIDERS:
+            raise ValueError(tr("Unsupported recognition service", "不支持的语音识别服务"))
         if type(self.reduced_motion) is not bool or type(self.onboarding_complete) is not bool:
             raise ValueError("Invalid preference type")
         if type(self.polish_enabled) is not bool:
@@ -197,21 +226,41 @@ class Settings:
                 raise ValueError(tr("Invalid polishing prompt", "无效的润色提示词"))
         if self.version != 1:
             raise ValueError(tr("Unsupported settings version", "不支持的设置版本"))
-        for key in (self.doubao_key,):
+        optional_shortcuts = (
+            (self.vibekey_record_key, self.vibekey_record_modifiers),
+            (self.vibekey_enter_key, self.vibekey_enter_modifiers),
+            (self.vibekey_cancel_key, self.vibekey_cancel_modifiers),
+        )
+        required_shortcuts = (
+            (self.doubao_key, self.doubao_modifiers),
+            (self.vibekey_clockwise_key, self.vibekey_clockwise_modifiers),
+            (self.vibekey_counterclockwise_key, self.vibekey_counterclockwise_modifiers),
+            (self.vibekey_press_key, self.vibekey_press_modifiers),
+        )
+        shortcuts = required_shortcuts + optional_shortcuts
+        for key, _ in required_shortcuts:
             if not is_trigger_key(key):
                 raise ValueError(tr("Unsupported trigger key", "不支持的触发键"))
-        canonical_modifiers = tuple(canonical_key_code(code) for code in self.doubao_modifiers)
-        if (not isinstance(self.doubao_modifiers, tuple)
-                or len(self.doubao_modifiers) > 4
-                or len(set(canonical_modifiers)) != len(canonical_modifiers)
-                or canonical_key_code(self.doubao_key) in canonical_modifiers
-                or any(code not in MODIFIER_KEY_CODES for code in self.doubao_modifiers)):
-            raise ValueError(tr("Invalid trigger shortcut", "无效的触发快捷键"))
+        for key, _ in optional_shortcuts:
+            if key is not None and not is_trigger_key(key):
+                raise ValueError(tr("Unsupported trigger key", "不支持的触发键"))
+        for key, modifiers in shortcuts:
+            if not isinstance(modifiers, tuple):
+                raise ValueError(tr("Invalid trigger shortcut", "无效的触发快捷键"))
+            canonical_modifiers = tuple(canonical_key_code(code) for code in modifiers)
+            if ((key is None and modifiers)
+                    or len(modifiers) > 4
+                    or len(set(canonical_modifiers)) != len(canonical_modifiers)
+                    or (key is not None
+                        and canonical_key_code(key) in canonical_modifiers)
+                    or any(code not in MODIFIER_KEY_CODES for code in modifiers)):
+                raise ValueError(tr("Invalid trigger shortcut", "无效的触发快捷键"))
         if not (type(self.hold_ms) is int and 200 <= self.hold_ms <= 1500):
             raise ValueError(tr("Hold threshold must be 200–1500 ms", "长按阈值必须在 200–1500 毫秒之间"))
         if not (type(self.double_ms) is int and 150 <= self.double_ms <= 600):
             raise ValueError(tr("Double-tap interval must be 150–600 ms", "双击间隔必须在 150–600 毫秒之间"))
-        if type(self.double_enter) is not bool or type(self.autostart) is not bool:
+        if (type(self.double_enter) is not bool or type(self.autostart) is not bool
+                or type(self.vibekey_enabled) is not bool):
             raise ValueError(tr("Switch settings must be boolean", "开关设置必须为布尔值"))
 
     @classmethod
@@ -233,10 +282,25 @@ class Settings:
                 # A user-edited single prompt remains effective for both languages.
                 values.setdefault("polish_prompt_zh", old_prompt)
                 values.setdefault("polish_prompt_en", old_prompt)
-        key, modifiers = canonical_shortcut(values.get("doubao_key", 464),
-                                            values.get("doubao_modifiers", ()))
-        values["doubao_key"] = key
-        values["doubao_modifiers"] = modifiers
+        # A background plugin can briefly keep running older Python code while
+        # an update adds a preference. Keep all settings this version knows
+        # instead of discarding the entire file and falling back to defaults.
+        known = {item.name for item in fields(cls)}
+        values = {key: value for key, value in values.items() if key in known}
+        defaults = cls()
+        for prefix in ("doubao", "vibekey_record", "vibekey_enter",
+                       "vibekey_cancel", "vibekey_clockwise",
+                       "vibekey_counterclockwise", "vibekey_press"):
+            key_field, modifiers_field = prefix + "_key", prefix + "_modifiers"
+            saved_key = values.get(key_field, getattr(defaults, key_field))
+            saved_modifiers = values.get(
+                modifiers_field, getattr(defaults, modifiers_field))
+            optional = prefix in ("vibekey_record", "vibekey_enter",
+                                  "vibekey_cancel")
+            key, modifiers = ((None, ()) if optional and saved_key is None else
+                              canonical_shortcut(saved_key, saved_modifiers))
+            values[key_field] = key
+            values[modifiers_field] = modifiers
         data = cls(**values)
         data.validate()
         return data
@@ -244,7 +308,20 @@ class Settings:
     def save(self):
         self.validate()
         path = config_dir() / "doubao-say" / "settings.json"
-        write_atomic(path, (json.dumps(asdict(self), ensure_ascii=False, indent=2) + "\n").encode())
+        known = {item.name for item in fields(self)}
+        unknown = {}
+        if path.exists():
+            try:
+                saved = json.loads(path.read_text())
+                if isinstance(saved, dict):
+                    unknown = {key: value for key, value in saved.items()
+                               if key not in known and key not in REMOVED_SETTING_FIELDS}
+            except (OSError, TypeError, ValueError):
+                # An explicit save replaces an unreadable file with validated
+                # settings; rollback is handled by apply_preferences.
+                pass
+        payload = {**unknown, **asdict(self)}
+        write_atomic(path, (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode())
 
 
 def desktop_entry(background=False):

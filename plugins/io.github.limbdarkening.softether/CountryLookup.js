@@ -335,15 +335,22 @@ function normalizedWords(value) {
     .trim()
 }
 
+var COUNTRY_MAP = (function() {
+  var map = Object.create(null)
+  for (var i = 0; i < COUNTRY_DATA.length; i++) {
+    var code = COUNTRY_DATA[i][0]
+    var sourceLabel = COUNTRY_DATA[i][1]
+    map[code] = {
+      code: code,
+      label: COUNTRY_LABELS[code] || sourceLabel
+    }
+  }
+  return map
+})()
+
 function definitionForCode(code) {
   var expected = String(code || "").toUpperCase()
-  for (var i = 0; i < COUNTRY_DATA.length; i++)
-    if (COUNTRY_DATA[i][0] === expected)
-      return {
-        code: COUNTRY_DATA[i][0],
-        label: COUNTRY_LABELS[expected] || COUNTRY_DATA[i][1]
-      }
-  return null
+  return COUNTRY_MAP[expected] || null
 }
 
 function buildCandidates() {
@@ -367,13 +374,18 @@ function buildCandidates() {
 
 var COUNTRY_CANDIDATES = buildCandidates()
 
+var FLAG_CACHE = Object.create(null)
+
 function flagForCode(code) {
   var normalized = String(code || "").trim().toUpperCase()
   if (!/^[A-Z]{2}$/.test(normalized)) return "🏳"
-  return String.fromCodePoint(
+  if (FLAG_CACHE[normalized]) return FLAG_CACHE[normalized]
+  var flag = String.fromCodePoint(
     0x1F1E6 + normalized.charCodeAt(0) - 65,
     0x1F1E6 + normalized.charCodeAt(1) - 65
   )
+  FLAG_CACHE[normalized] = flag
+  return flag
 }
 
 function inferredDefinition(accountName) {
@@ -402,15 +414,31 @@ function fallbackLabel(accountName) {
   return name || "Unknown"
 }
 
+var _detailsCache = Object.create(null)
+var _detailsCacheCount = 0
+var MAX_DETAILS_CACHE = 512
+
 function countryDetails(accountName) {
-  var definition = inferredDefinition(accountName)
-  if (!definition)
-    return { code: "", label: fallbackLabel(accountName), flag: "🏳" }
-  return {
-    code: definition.code,
-    label: definition.label,
-    flag: flagForCode(definition.code)
+  var key = String(accountName || "")
+  if (_detailsCache[key]) return _detailsCache[key]
+
+  var definition = inferredDefinition(key)
+  var res
+  if (!definition) {
+    res = { code: "", label: fallbackLabel(key), flag: "🏳" }
+  } else {
+    res = {
+      code: definition.code,
+      label: definition.label,
+      flag: flagForCode(definition.code)
+    }
   }
+
+  if (_detailsCacheCount < MAX_DETAILS_CACHE) {
+    _detailsCache[key] = res
+    _detailsCacheCount++
+  }
+  return res
 }
 
 if (typeof module !== "undefined") {

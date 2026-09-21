@@ -106,6 +106,33 @@ assert.equal(parsedDups.length, 2)
 assert.equal(parsedDups[0].name, "Node First")
 assert.equal(parsedDups[1].name, "Node Third")
 
+// Test that VPNGate_Direct is never dropped even if it shares an IP with a saved account
+const dupWithDirect = [
+  "VPN Connection Setting Name | #US 135.180.93.53",
+  "Status | Offline",
+  "VPN Server Hostname | 135.180.93.53:1919",
+  "VPN Connection Setting Name | VPNGate_Direct",
+  "Status | Connected",
+  "VPN Server Hostname | 135.180.93.53:1919"
+].join("\n")
+const parsedDirect = model.parseAccountList(dupWithDirect)
+assert.equal(parsedDirect.length, 2)
+assert.equal(parsedDirect[0].name, "#US 135.180.93.53")
+assert.equal(parsedDirect[1].name, "VPNGate_Direct")
+assert.equal(parsedDirect[1].statusKind, "connected")
+
+// Test that an active (connected/connecting) account is never dropped by duplicate IP
+const dupWithActive = [
+  "VPN Connection Setting Name | Saved Node Old",
+  "Status | Offline",
+  "VPN Server Hostname | 23.93.5.4:1000",
+  "VPN Connection Setting Name | Saved Node Active",
+  "Status | Connected",
+  "VPN Server Hostname | 23.93.5.4:1782"
+].join("\n")
+const parsedActive = model.parseAccountList(dupWithActive)
+assert.equal(parsedActive.length, 2)
+
 assert.equal(model.parseAddress("x".repeat(32769)), "")
 assert.equal(model.parseAddress(JSON.stringify(Array.from({ length: 129 }, () => ({})))), "")
 assert.equal(model.hasDefaultRoute("x".repeat(32769), "vpn_vpn"), false)

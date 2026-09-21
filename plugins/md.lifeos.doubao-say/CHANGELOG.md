@@ -1,7 +1,58 @@
 # Changelog
 
+## 1.2.0
+
+- Added optional Vibekey receiver support with authenticated heartbeat and hot-plug
+  recovery. Its three buttons, two dial directions, and dial press have useful
+  defaults and can each send a custom recorded shortcut. Support remains off by
+  default and uses a narrowly scoped udev rule without adding a software dependency.
+- Recover cleanly when a microphone or keyboard device disconnects. Unexpected
+  PipeWire termination stops the active session, stale callbacks cannot affect a
+  newer recording, and one failed evdev device no longer drops every keyboard.
+- Added live microphone refresh in Settings. Opening Settings or pressing Refresh
+  devices rescans PipeWire inputs while preserving a saved device that is temporarily
+  unavailable.
+- Gave voice polishing its own status row, subtle sparkle animation, delayed
+  original-text shortcut hint, and reduced-motion presentation. Streaming text no
+  longer has to carry the polishing status prefix.
+- Added provider-aware low-latency reasoning controls and clearer bilingual guidance.
+  Official DeepSeek and compatible Gemini configurations request thinking off;
+  Zhipu standard and Coding Plan endpoints request thinking off where supported,
+  while GLM-5.3 variants use low reasoning effort because they reject that switch.
+  The five-second deadline and original-text fallback remain unchanged.
+- Simplified onboarding navigation with larger icon-only arrow controls and localized
+  tooltips.
+- Rebuilt desktop acceptance around Midscene Test on Ubuntu 22.04 and Omarchy 4.0.3.
+  CI now publishes per-case Markdown evidence tables, node screenshots, AI text or
+  errors, direct failed-node links, replayable HTML reports, and retained report
+  history even when individual cases fail. Product cases run in parallel shards.
+- Removed automatically loaded coding-agent instruction files from the distributed
+  Marketplace checkout and added a publication guard to prevent them from returning.
+
+## 1.1.0
+
+- Added native X11/XFCE automatic input with target/focus guards, terminal-aware
+  paste shortcuts and a non-activating overlay. `xdotool` and `xclip` remain
+  optional runtime enhancements; recognition still works without either tool.
+- Preserve the contributor history behind native X11 support. Thanks to
+  [@laukkw](https://github.com/laukkw) for the original implementation and
+  desktop acceptance coverage.
+- Keep local microphone pre-roll out of the network stream until a recording
+  gesture is confirmed, ignore the first startup RMS block, remove DC offset
+  from level detection and finish recognition after a 500 ms quiet period.
+- Preserve complete clipboard MIME payloads during paste and restore them only
+  when the temporary text is still present, avoiding overwriting a clipboard
+  change made while delivery is in progress. CopyQ is not required.
+- Refresh onboarding readiness after microphone, voice and credential checks;
+  retain recent recognition results for copy or guarded retry when delivery
+  cannot be confirmed.
+- Restrict diagnostics to allowlisted stages and timing data, without
+  credentials, transcripts or device identifiers.
+- Expanded regression, native-X11 and release documentation coverage.
+
 ## 1.0.0 — release candidate
 
+- Add an optional direct typing mode using wtype without touching the clipboard; clipboard paste remains the default.
 - Added one `install.sh` entry point for source checkouts and release archives, with explicit Arch/Omarchy dependency detection, confirmation and read-only checks.
 - Replaced the recording overlay's large update arrow with a compact red status dot.
 - Update caches are scoped to the installed application version, preventing stale development-version notifications after an upgrade, downgrade or version reset.

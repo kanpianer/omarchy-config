@@ -11,8 +11,15 @@ Item {
   property bool installed: false
   property bool serviceAvailable: false
   property bool refreshing: false
-  property bool busy: actionProcess.running
+  property bool busy: actionProcess.running || renameProcess.running || directOnlineProcess.running
   property var accounts: []
+  readonly property var savedAccounts: {
+    var list = []
+    for (var i = 0; i < accounts.length; i++) {
+      if (accounts[i].name !== "VPNGate_Direct") list.push(accounts[i])
+    }
+    return list
+  }
   property string selectedAccountName: ""
   property string tunnelAddress: ""
   property bool hasVpnDefaultRoute: false
@@ -30,9 +37,19 @@ Item {
   property bool addingOnline: addOnlineProcess.running
   property string onlineError: ""
   property var pendingConnectNode: null
+  property var directConnectedNode: null
+  property var pendingDirectConnectNode: null
+  readonly property bool configuringDirect: directOnlineProcess.running
   readonly property string vpngateHelperPath: Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.limbdarkening.softether/vpngate-helper"
 
+  property string renamingOldName: ""
+  property string renamingNewName: ""
+  property string _renameOutput: ""
+  property string _renameError: ""
+  readonly property bool renaming: renameProcess.running
+
   signal selectionRequested(string accountName)
+  signal accountRenamed(string oldName, string newName)
   signal importCompleted(bool success, string message)
   signal onlineNodesFetched(bool success, string errorMsg)
   signal onlineNodeAdded(bool success, string accountName, string message)
@@ -60,8 +77,27 @@ Item {
   })
   readonly property bool usable: connectedAccount !== null && tunnelAddress !== "" && hasVpnDefaultRoute
   readonly property bool connectAnimationActive: Model.shouldPulse(actionKind)
-  readonly property string country: selectedAccount ? selectedAccount.country : "VPN"
-  readonly property string nodeName: selectedAccount ? (selectedAccount.name || selectedAccount.country) : country
+  function displayNameForAccount(acc) {
+    if (!acc) return ""
+    if (acc.name === "VPNGate_Direct") {
+      if (directConnectedNode && directConnectedNode.name) return directConnectedNode.name
+      return directConnectedNode ? directConnectedNode.country : "VPN Gate"
+    }
+    return acc.name || acc.country
+  }
+
+  readonly property string country: {
+    if (activeAccount && activeAccount.name === "VPNGate_Direct") {
+      return directConnectedNode ? (directConnectedNode.country || "VPN") : "VPN"
+    }
+    return selectedAccount ? selectedAccount.country : "VPN"
+  }
+  readonly property string nodeName: {
+    if (activeAccount && activeAccount.name === "VPNGate_Direct") {
+      return directConnectedNode ? (directConnectedNode.name || directConnectedNode.country || "VPN Gate") : "VPN Gate"
+    }
+    return selectedAccount ? (selectedAccount.name || selectedAccount.country) : country
+  }
   readonly property string state: Model.presentationState({
     installed: installed,
     serviceAvailable: serviceAvailable,
@@ -76,15 +112,20 @@ Item {
     if (!settingsValid) return settingsError
     if (!installed) return "SoftEther is not installed"
     if (!serviceAvailable) return "SoftEther client service is stopped"
-    if (accounts.length === 0) return "No imported VPN profiles"
+    if (savedAccounts.length === 0 && !activeAccount) return "No imported VPN profiles"
     if (lastError !== "") return "Connection failed · " + nodeName
-    if (busy && actionKind === "connect") return "Connecting to " + nodeName + "…"
+    if (busy && actionKind === "connect") {
+      var targetName = actionAccountName === "VPNGate_Direct" && directConnectedNode
+        ? directConnectedNode.name : (actionAccountName || nodeName)
+      return "Connecting to " + targetName + "…"
+    }
     if (busy && actionKind === "disconnect") return "Disconnecting…"
     if (busy && actionKind === "delete") return "Deleting " + (actionAccountName || nodeName) + "…"
+    if (renaming) return "Renaming " + (renamingOldName || "node") + "…"
     if (importing) return "Importing VPN profiles…"
-    if (connectingAccount) return "Connecting to " + (connectingAccount.name || connectingAccount.country) + "…"
+    if (connectingAccount) return "Connecting to " + displayNameForAccount(connectingAccount) + "…"
     if (connectedAccount && !usable) return "Connected; waiting for VPN route"
-    if (connectedAccount) return "Connected to " + (connectedAccount.name || connectedAccount.country)
+    if (connectedAccount) return "Connected to " + displayNameForAccount(connectedAccount)
     return "Disconnected · " + nodeName + " selected"
   }
   readonly property string tooltipText: "SoftEther VPN · " + statusText
@@ -102,6 +143,8 @@ Item {
   property string _onlineError: ""
   property string _addOnlineOutput: ""
   property string _addOnlineError: ""
+  property string _directOnlineOutput: ""
+  property string _directOnlineError: ""
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -135,16 +178,17 @@ Item {
   }
 
   function choosePreferredAccount() {
-    if (activeAccount) {
+    if (activeAccount && activeAccount.name !== "VPNGate_Direct") {
       selectedAccountName = activeAccount.name
       return
     }
     var configured = configuredAccountName
-    if (accountNamed(configured)) {
+    if (accountNamed(configured) && configured !== "VPNGate_Direct") {
       selectedAccountName = configured
       return
     }
-    if (accounts.length > 0) selectedAccountName = accounts[0].name
+    var saved = savedAccounts
+    if (saved.length > 0) selectedAccountName = saved[0].name
     else selectedAccountName = ""
   }
 
@@ -169,7 +213,12 @@ Item {
       return
     }
     refreshAccounts()
-    refreshNetwork()
+    if (connectedAccount !== null || connectingAccount !== null || desiredState === 1 || (busy && actionKind === "connect")) {
+      refreshNetwork()
+    } else {
+      tunnelAddress = ""
+      hasVpnDefaultRoute = false
+    }
   }
 
   function refreshAccounts() {
@@ -253,6 +302,10 @@ Item {
     }
     var account = accountNamed(name)
     if (!account || busy || !serviceAvailable) return
+    if (name !== "VPNGate_Direct") {
+      directConnectedNode = null
+      pendingDirectConnectNode = null
+    }
     selectedAccountName = account.name
     selectionRequested(account.name)
     desiredState = 1
@@ -298,6 +351,21 @@ Item {
       selectedAccountName = ""
     }
     runAction("delete", name, "")
+  }
+
+  function renameAccount(oldName, newName) {
+    if (!oldName || !newName || renameProcess.running || actionProcess.running) return
+    if (!Model.validAccountName(newName, false)) {
+      lastError = "Invalid SoftEther account name"
+      return
+    }
+    _renameOutput = ""
+    _renameError = ""
+    renamingOldName = oldName
+    renamingNewName = newName
+    renameProcess.command = ["timeout", "--signal=TERM", "--kill-after=5s", "15s",
+      controlPath, "rename", oldName, newName]
+    renameProcess.running = true
   }
 
   function runAction(kind, accountName, nextAccountName) {
@@ -347,34 +415,30 @@ Item {
     _onlineOutput = ""
     _onlineError = ""
     onlineError = ""
-    var args = ["timeout", "--signal=TERM", "--kill-after=3s", "15s", vpngateHelperPath, "fetch"]
+    var args = ["timeout", "--signal=TERM", "--kill-after=5s", "75s", vpngateHelperPath, "fetch"]
     if (force === true) args.push("--force")
     fetchOnlineProcess.command = args
     fetchOnlineProcess.running = true
   }
 
-  function addOnlineNode(node, autoConnect) {
+  function addOnlineNode(node) {
     if (!node || !node.ip || !node.port || !node.name) return
     if (addOnlineProcess.running) return
-    if (autoConnect === true) {
-      pendingConnectNode = node
-    } else {
-      pendingConnectNode = null
-    }
     _addOnlineOutput = ""
     _addOnlineError = ""
     addOnlineProcess.command = ["timeout", "--signal=TERM", "--kill-after=3s", "10s",
-      vpngateHelperPath, "add", String(node.ip), String(node.port), String(node.name), "VPN"]
+      vpngateHelperPath, "add", String(node.ip), String(node.port), String(node.name), adapterName]
     addOnlineProcess.running = true
   }
 
   function connectToOnlineNode(node) {
     if (!node || !node.name) return
-    var targetIp = String(node.ip || "")
-    var targetName = String(node.name || "")
+    var targetIp = String(node.ip || "").trim()
+    var targetName = String(node.name || "").trim()
     var existing = null
     for (var i = 0; i < accounts.length; i++) {
       var acc = accounts[i]
+      if (acc.name === "VPNGate_Direct") continue
       var accHost = (acc.server || "").split(":")[0].trim()
       if (acc.name === targetName || (targetIp !== "" && accHost === targetIp)) {
         existing = acc
@@ -382,10 +446,52 @@ Item {
       }
     }
     if (existing) {
+      directConnectedNode = null
       connectToAccount(existing.name)
     } else {
-      addOnlineNode(node, true)
+      connectOnlineDirect(node)
     }
+  }
+
+  function connectOnlineDirect(node) {
+    if (!settingsValid) {
+      lastError = settingsError
+      return
+    }
+    if (busy || !serviceAvailable || !node || !node.ip || !node.port) return
+
+    var current = activeAccount
+    if (current && current.name === "VPNGate_Direct") {
+      var curHost = (current.server || "").split(":")[0].trim()
+      if (curHost === String(node.ip).trim() && usable) {
+        return
+      }
+    }
+
+    directConnectedNode = node
+    desiredState = 1
+
+    if (current) {
+      pendingDirectConnectNode = node
+      runAction("disconnect", current.name, "")
+      return
+    }
+
+    startDirectOnlineProcess(node)
+  }
+
+  function startDirectOnlineProcess(node) {
+    if (!node || !node.ip || !node.port) return
+    directConnectedNode = node
+    actionKind = "connect"
+    actionAccountName = "VPNGate_Direct"
+    actionStatus = "Connecting to " + (node.name || node.country || "node") + "…"
+    lastError = ""
+    _directOnlineOutput = ""
+    _directOnlineError = ""
+    directOnlineProcess.command = ["timeout", "--signal=TERM", "--kill-after=3s", "10s",
+      vpngateHelperPath, "direct", String(node.ip), String(node.port), adapterName]
+    directOnlineProcess.running = true
   }
 
   Component.onCompleted: refresh()
@@ -456,6 +562,24 @@ Item {
           parsedAccounts[i].country = country.label
           parsedAccounts[i].countryCode = country.code
           parsedAccounts[i].flag = country.flag
+          if (parsedAccounts[i].name === "VPNGate_Direct") {
+            var directNode = root.directConnectedNode
+            if (!directNode && root.onlineNodes) {
+              var sHost = (parsedAccounts[i].server || "").split(":")[0].trim()
+              for (var j = 0; j < root.onlineNodes.length; j++) {
+                if (root.onlineNodes[j].ip === sHost) {
+                  directNode = root.onlineNodes[j]
+                  root.directConnectedNode = directNode
+                  break
+                }
+              }
+            }
+            if (directNode) {
+              parsedAccounts[i].country = directNode.country || "VPN"
+              parsedAccounts[i].countryCode = directNode.countryCode || ""
+              parsedAccounts[i].flag = directNode.flag || "🏳"
+            }
+          }
         }
         root.accounts = parsedAccounts
         root.choosePreferredAccount()
@@ -467,6 +591,12 @@ Item {
         if (root.desiredState === 0 && !root.activeAccount) root.desiredState = -1
         else if (root.desiredState === 0 && root.activeAccount && !actionProcess.running) {
           root.disconnectVpn()
+        }
+        if (root.connectedAccount !== null || root.connectingAccount !== null || root.desiredState === 1 || (root.busy && root.actionKind === "connect")) {
+          root.refreshNetwork()
+        } else {
+          root.tunnelAddress = ""
+          root.hasVpnDefaultRoute = false
         }
       } else {
         root.serviceAvailable = false
@@ -550,12 +680,58 @@ Item {
       }
 
       root.lastError = ""
+      if (completedKind === "disconnect" && root.pendingDirectConnectNode) {
+        var nodeToDirect = root.pendingDirectConnectNode
+        root.pendingDirectConnectNode = null
+        Qt.callLater(function() {
+          root.startDirectOnlineProcess(nodeToDirect)
+        })
+        return
+      }
       if (completedKind === "disconnect" && next !== "") {
         Qt.callLater(function() { root.runAction("connect", next, "") })
       } else {
         settleDesiredState.restart()
         delayedRefresh.restart()
       }
+    }
+  }
+
+  Process {
+    id: renameProcess
+    running: false
+    command: []
+    stdout: StdioCollector {
+      id: renameStdout
+      waitForEnd: true
+      onStreamFinished: root._renameOutput = text || ""
+    }
+    stderr: StdioCollector {
+      id: renameStderr
+      waitForEnd: true
+      onStreamFinished: root._renameError = text || ""
+    }
+    onExited: function(exitCode) {
+      var oldName = root.renamingOldName
+      var newName = root.renamingNewName
+      root.renamingOldName = ""
+      root.renamingNewName = ""
+      var stdout = renameStdout.text || root._renameOutput || ""
+      var stderr = renameStderr.text || root._renameError || ""
+
+      if (exitCode !== 0) {
+        root.lastError = root.elide(stderr || stdout || "Failed to rename account")
+        root.refresh()
+        return
+      }
+
+      root.lastError = ""
+      if (root.selectedAccountName === oldName) {
+        root.selectedAccountName = newName
+        root.selectionRequested(newName)
+      }
+      root.accountRenamed(oldName, newName)
+      root.refresh()
     }
   }
 
@@ -672,26 +848,56 @@ Item {
     onExited: function(exitCode) {
       var stdout = (addOnlineStdout.text || root._addOnlineOutput || "").trim()
       var stderr = (addOnlineStderr.text || root._addOnlineError || "").trim()
-      var toConnect = root.pendingConnectNode
-      root.pendingConnectNode = null
       if (exitCode === 0) {
         root.lastError = ""
         root.refreshAccounts()
         notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-i", "network-vpn",
           "SoftEther VPN", stdout ? stdout : "Saved node to local list"]
         notifyProcess.running = true
-        if (toConnect && toConnect.name) {
-          Qt.callLater(function() {
-            root.connectToAccount(toConnect.name)
-          })
-        }
-        root.onlineNodeAdded(true, toConnect ? toConnect.name : "", stdout)
+        root.onlineNodeAdded(true, "", stdout)
       } else {
         root.lastError = root.elide(stderr || stdout || "Failed to add VPN node")
         notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-u", "critical",
           "SoftEther VPN", root.lastError]
         notifyProcess.running = true
-        root.onlineNodeAdded(false, toConnect ? toConnect.name : "", root.lastError)
+        root.onlineNodeAdded(false, "", root.lastError)
+      }
+    }
+  }
+
+  Process {
+    id: directOnlineProcess
+    running: false
+    command: []
+    stdout: StdioCollector {
+      id: directOnlineStdout
+      waitForEnd: true
+      onStreamFinished: root._directOnlineOutput = text || ""
+    }
+    stderr: StdioCollector {
+      id: directOnlineStderr
+      waitForEnd: true
+      onStreamFinished: root._directOnlineError = text || ""
+    }
+    onExited: function(exitCode) {
+      var stdout = (directOnlineStdout.text || root._directOnlineOutput || "").trim()
+      var stderr = (directOnlineStderr.text || root._directOnlineError || "").trim()
+      if (exitCode === 0) {
+        root.lastError = ""
+        root.actionKind = ""
+        root.actionAccountName = ""
+        root.actionStatus = ""
+        root.runAction("connect", "VPNGate_Direct", "")
+      } else {
+        root.actionKind = ""
+        root.actionAccountName = ""
+        root.actionStatus = ""
+        root.desiredState = -1
+        root.lastError = root.elide(stderr || stdout || "Failed to configure direct connection")
+        notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-u", "critical",
+          "SoftEther VPN", root.lastError]
+        notifyProcess.running = true
+        root.refresh()
       }
     }
   }

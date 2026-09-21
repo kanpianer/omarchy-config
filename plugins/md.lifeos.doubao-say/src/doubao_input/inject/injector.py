@@ -1,41 +1,41 @@
-"""Text injection: copy-to-clipboard + simulate Ctrl+V via uinput.
-
-The only reliable way to "paste" into a native Wayland app on GNOME
-(Mutter does not implement the virtual-keyboard protocol that wtype
-needs) is to write text to the clipboard and then synthesize a
-Ctrl+V keypress via a /dev/uinput virtual keyboard.
-
-CJK text cannot be typed key-by-key through a virtual keyboard, so
-the clipboard path is mandatory for Chinese.
-
-The uinput device is opened lazily on first inject() and kept alive
-for the process lifetime to avoid the per-injection cost of creating
-and destroying a kernel device.
-"""
+"""Clipboard paste via uinput, or optional direct Unicode input via wtype."""
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import os
 import subprocess
 import threading
 import time
-from typing import Optional
+from dataclasses import dataclass
 
 from doubao_input.doubao.host_tools import command_candidates
-from doubao_input.inject.target import focused_target
+from doubao_input.desktop import is_x11
+from doubao_input.inject.target import focused_target, x11_window
+from doubao_input.inject.direct import type_text
+from doubao_input.settings import CAPTURABLE_KEY_CODES
 
 logger = logging.getLogger(__name__)
 
-# Pause after wl-copy so the clipboard manager has settled.
+# Pause after copying so the clipboard manager has settled.
 # Also pause after the right-Alt physical release to avoid mixing it
 # with our injected Left Ctrl.
 PASTE_DELAY = 0.08  # seconds
+CLIPBOARD_RESTORE_DELAY = 0.25
+MAX_CLIPBOARD_SNAPSHOT_BYTES = 20 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ClipboardSnapshot:
+    backend: str
+    mime_type: str
+    data: bytes
 
 # Linux keycodes (from linux/input-event-codes.h)
 KEY_LEFTCTRL = 29
 KEY_V = 47
 KEY_LEFTSHIFT = 42
+EV_KEY = 1
 
 TERMINAL_CLASSES = {
     "foot", "footclient", "kitty", "alacritty", "wezterm",
@@ -47,8 +47,11 @@ TERMINAL_CLASSES = {
 
 
 def active_window_needs_shift() -> bool:
-    """Use the Hyprland app ID, never window titles, to select terminal paste."""
+    """Use the app class, never window titles, to select terminal paste."""
     from doubao_input.doubao.config import INJECT_USE_SHIFT
+    if is_x11():
+        window = x11_window()
+        return window[1] in TERMINAL_CLASSES if window else INJECT_USE_SHIFT
     if not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
         return INJECT_USE_SHIFT
     try:
@@ -74,8 +77,16 @@ class Injector:
 
     # ---- public ----
 
-    def inject(self, text: str, use_shift: bool | None = None, *, expected_target=None, cancelled=lambda: False) -> bool:
-        """Copy text to clipboard then synthesize Ctrl+V (or Ctrl+Shift+V)."""
+    def inject(self, text: str, use_shift: bool | None = None, *, expected_target=None, cancelled=lambda: False, method="clipboard") -> bool:
+        """Deliver using the selected method; direct input never falls back to paste."""
+        if method == "direct":
+            if is_x11():
+                logger.warning("Direct input requires Wayland; text retained")
+                return False
+            with self._lock:
+                return type_text(text, expected_target, cancelled)
+        if method != "clipboard":
+            return False
         if not text or cancelled():
             return False
         if expected_target and focused_target() != expected_target:
@@ -85,17 +96,22 @@ class Injector:
         with self._lock:
             if cancelled():
                 return False
+            snapshot = self._snapshot_clipboard()
             ok_copy = self._copy_to_clipboard(text)
             if not ok_copy:
                 logger.error("clipboard copy failed; cannot inject")
                 return False
-            time.sleep(PASTE_DELAY)
-            if cancelled():
-                return False
-            if expected_target and focused_target() != expected_target:
-                return False
-            ok_paste = self._simulate_paste(use_shift=use_shift, cancelled=cancelled)
-            return ok_paste
+            try:
+                time.sleep(PASTE_DELAY)
+                if cancelled():
+                    return False
+                if expected_target and focused_target() != expected_target:
+                    return False
+                return self._simulate_paste(use_shift=use_shift, cancelled=cancelled)
+            finally:
+                if snapshot:
+                    time.sleep(CLIPBOARD_RESTORE_DELAY)
+                    self._restore_clipboard_if_unchanged(snapshot, text)
 
     def inject_via_uinput_only(self, use_shift: bool = False) -> bool:
         """Just synthesize Ctrl+V (use when caller already filled clipboard)."""
@@ -144,6 +160,44 @@ class Injector:
                         logger.warning("Could not release virtual Enter key")
                         self._discard_uinput(ui)
 
+    def send_shortcut(self, key: int, modifiers=()) -> bool:
+        """Send one configurable keyboard shortcut through the virtual keyboard."""
+        if not key:
+            return True
+        with self._lock:
+            pressed = []
+            ui = None
+            failed = False
+            release_failed = False
+            try:
+                created = self._ui is None
+                ui = self._get_uinput()
+                if created:
+                    # Give the compositor time to discover the new keyboard.
+                    time.sleep(0.08)
+                for code in (*modifiers, key):
+                    ui.write(EV_KEY, code, 1)
+                    pressed.append(code)
+                    ui.syn()
+                    time.sleep(0.012)
+            except OSError:
+                logger.exception("Could not inject shortcut")
+                failed = True
+            finally:
+                for code in reversed(pressed):
+                    try:
+                        ui.write(EV_KEY, code, 0)
+                        ui.syn()
+                        time.sleep(0.012)
+                    except OSError:
+                        logger.warning("Could not release a virtual shortcut key")
+                        release_failed = True
+                        break
+                if ((failed or release_failed) and ui is not None
+                        and self._ui is ui):
+                    self._discard_uinput(ui)
+            return not failed and not release_failed
+
     # ---- internals ----
 
     def _discard_uinput(self, ui):
@@ -156,15 +210,15 @@ class Injector:
 
     def _copy_to_clipboard(self, text: str) -> bool:
         data = text.encode("utf-8")
-        # wl-copy first
-        for cmd in command_candidates("wl-copy"):
+        # Native X11 has no Wayland selection; preserve wl-copy priority elsewhere.
+        for cmd in ([] if is_x11() else command_candidates("wl-copy")):
             try:
                 subprocess.run(cmd, input=data, check=True, timeout=3)
                 logger.info("clipboard: wl-copy ok")
                 return True
             except Exception as e:
                 logger.debug("wl-copy failed: %s", e)
-        # xclip fallback (XWayland only)
+        # Native X11, or the existing XWayland fallback.
         for cmd in command_candidates("xclip"):
             try:
                 subprocess.run(
@@ -175,6 +229,75 @@ class Injector:
                 return True
             except Exception as e:
                 logger.debug("xclip failed: %s", e)
+        return False
+
+    @staticmethod
+    def _read(command, *, timeout=1):
+        try:
+            result = subprocess.run(command, capture_output=True, check=True,
+                                    timeout=timeout)
+            if len(result.stdout) <= MAX_CLIPBOARD_SNAPSHOT_BYTES:
+                return result.stdout
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return None
+
+    def _snapshot_clipboard(self):
+        """Capture one lossless primary MIME payload for best-effort restoration."""
+        for command in command_candidates("wl-paste"):
+            formats = self._read(command + ["--list-types"])
+            if formats is None:
+                continue
+            mime_type = self._preferred_mime(formats.decode("utf-8", "replace").splitlines())
+            if not mime_type:
+                return None
+            data = self._read(command + ["--no-newline", "--type", mime_type])
+            return ClipboardSnapshot("wayland", mime_type, data) if data is not None else None
+        for command in command_candidates("xclip"):
+            formats = self._read(command + ["-selection", "clipboard", "-t", "TARGETS", "-o"])
+            if formats is None:
+                continue
+            mime_type = self._preferred_mime(formats.decode("utf-8", "replace").splitlines())
+            if not mime_type:
+                return None
+            data = self._read(command + ["-selection", "clipboard", "-t", mime_type, "-o"])
+            return ClipboardSnapshot("x11", mime_type, data) if data is not None else None
+        return None
+
+    @staticmethod
+    def _preferred_mime(formats):
+        available = {item.strip() for item in formats if item.strip()}
+        priorities = (
+            "image/png", "image/jpeg", "image/webp", "text/uri-list", "text/html",
+            "text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING",
+        )
+        return next((item for item in priorities if item in available), None)
+
+    def _current_clipboard_text(self, backend):
+        tool = "wl-paste" if backend == "wayland" else "xclip"
+        suffix = (["--no-newline"] if backend == "wayland"
+                  else ["-selection", "clipboard", "-o"])
+        for command in command_candidates(tool):
+            data = self._read(command + suffix)
+            if data is not None:
+                return data.decode("utf-8", "replace")
+        return None
+
+    def _restore_clipboard_if_unchanged(self, snapshot, written_text):
+        """Never overwrite a clipboard value copied by the user after dictation."""
+        if self._current_clipboard_text(snapshot.backend) != written_text:
+            return False
+        tool = "wl-copy" if snapshot.backend == "wayland" else "xclip"
+        for command in command_candidates(tool):
+            args = (command + ["--type", snapshot.mime_type] if snapshot.backend == "wayland"
+                    else command + ["-selection", "clipboard", "-t", snapshot.mime_type])
+            try:
+                subprocess.run(args, input=snapshot.data, check=True, timeout=3)
+                logger.info("clipboard: original %s payload restored", snapshot.mime_type)
+                return True
+            except (OSError, subprocess.SubprocessError):
+                continue
+        logger.warning("Could not restore the original clipboard payload")
         return False
 
     def _get_uinput(self):
@@ -190,7 +313,7 @@ class Injector:
         # never happens.
         self._ui = evdev.UInput(
             events={
-                evdev.ecodes.EV_KEY: [KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_V, 28],
+                evdev.ecodes.EV_KEY: sorted(CAPTURABLE_KEY_CODES),
             },
             name="doubao-say-virtual-kbd",
         )

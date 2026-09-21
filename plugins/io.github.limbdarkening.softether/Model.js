@@ -8,6 +8,17 @@ var MAX_JSON_ITEMS = 128
 var MAX_ACCOUNT_NAME_LENGTH = 128
 var MAX_PROFILE_NAME_LENGTH = 128
 
+var RE_SPACE_ENCODED = /\$20/g
+var RE_VALID_SETTING = /^[A-Za-z0-9#][A-Za-z0-9._@()+,#%=-]*( [A-Za-z0-9._@()+,#%=-]+)*$/
+var RE_VALID_ADAPTER = /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/
+var RE_SPACES = /\s+/g
+var RE_STATUS_OFFLINE = /disconnect|offline|not connected|disabled|stopped/
+var RE_STATUS_CONNECTING = /connecting|retry|negotiat/
+var RE_STATUS_CONNECTED = /connected|online|established/
+var RE_LINES = /\r?\n/
+var RE_KEY_SETTING = /^(vpn connection setting name|account name|connection setting name)$/
+var RE_VALID_IP_CHARS = /^[0-9A-Fa-f:.]+$/
+
 function bounded(value, maximum) {
   var text = String(value || "")
   return text.length <= maximum ? text : null
@@ -15,14 +26,14 @@ function bounded(value, maximum) {
 
 function decoded(value) {
   var text = bounded(value, MAX_FIELD_CHARS)
-  return text === null ? "" : text.replace(/\$20/g, " ").trim()
+  return text === null ? "" : text.replace(RE_SPACE_ENCODED, " ").trim()
 }
 
 function validNamedSetting(value, maximum, allowEmpty) {
   var text = String(value || "")
   if (allowEmpty && text === "") return true
   if (text.length < 1 || text.length > maximum) return false
-  return /^[A-Za-z0-9#][A-Za-z0-9._@()+,#%=-]*( [A-Za-z0-9._@()+,#%=-]+)*$/.test(text)
+  return RE_VALID_SETTING.test(text)
 }
 
 function validAccountName(value, allowEmpty) {
@@ -36,7 +47,7 @@ function validProfileName(value) {
 function validAdapterName(value) {
   var text = String(value || "")
   return text.length >= 1 && text.length <= 15
-    && /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(text)
+    && RE_VALID_ADAPTER.test(text)
 }
 
 function settingsError(accountName, profileName, adapterName) {
@@ -49,7 +60,7 @@ function settingsError(accountName, profileName, adapterName) {
 function elideError(value) {
   var text = String(value || "")
   if (text.length > 4096) text = text.substring(0, 4096)
-  text = text.replace(/\s+/g, " ").trim()
+  text = text.replace(RE_SPACES, " ").trim()
   return text.length > 180 ? text.substring(0, 177) + "…" : text
 }
 
@@ -69,9 +80,9 @@ function tableRow(line) {
 
 function statusKind(value) {
   var status = String(value || "").trim().toLowerCase()
-  if (/disconnect|offline|not connected|disabled|stopped/.test(status)) return "offline"
-  if (/connecting|retry|negotiat/.test(status)) return "connecting"
-  if (/connected|online|established/.test(status)) return "connected"
+  if (RE_STATUS_OFFLINE.test(status)) return "offline"
+  if (RE_STATUS_CONNECTING.test(status)) return "connecting"
+  if (RE_STATUS_CONNECTED.test(status)) return "connected"
   return status === "" ? "offline" : "unknown"
 }
 
@@ -110,22 +121,23 @@ function switchOn(options) {
 function parseAccountList(raw) {
   var input = bounded(raw, MAX_COMMAND_CHARS)
   if (input === null) return []
-  var lines = input.split(/\r?\n/)
+  var lines = input.split(RE_LINES)
   if (lines.length > MAX_LINES) return []
   var accounts = []
   var current = null
-  var seen = {}
-  var seenIp = {}
+  var seen = Object.create(null)
+  var seenIp = Object.create(null)
 
   function finish() {
     if (!current || !validAccountName(current.name, false)) return
     if (accounts.length >= MAX_ACCOUNTS || seen[current.name]) return
-    var host = (current.server || "").split(":")[0].trim()
-    if (host && seenIp[host]) return
     current.statusKind = statusKind(current.status)
+    var host = (current.server || "").split(":")[0].trim()
+    var isActive = current.statusKind === "connected" || current.statusKind === "connecting"
+    if (current.name !== "VPNGate_Direct" && !isActive && host && seenIp[host]) return
     accounts.push(current)
     seen[current.name] = true
-    if (host) seenIp[host] = true
+    if (current.name !== "VPNGate_Direct" && host) seenIp[host] = true
   }
 
   for (var i = 0; i < lines.length; i++) {
@@ -133,7 +145,7 @@ function parseAccountList(raw) {
     if (!row) continue
     var key = row.key.toLowerCase()
 
-    if (/^(vpn connection setting name|account name|connection setting name)$/.test(key)) {
+    if (RE_KEY_SETTING.test(key)) {
       finish()
       current = { name: row.value, status: "Offline", server: "", hub: "", adapter: "" }
       continue
@@ -161,7 +173,7 @@ function parseAddress(raw) {
         var address = addresses[j] || {}
         var local = String(address.local || "")
         if (address.scope === "global" && (address.family === "inet" || address.family === "inet6")
-            && local.length >= 2 && local.length <= 64 && /^[0-9A-Fa-f:.]+$/.test(local))
+            && local.length >= 2 && local.length <= 64 && RE_VALID_IP_CHARS.test(local))
           return local
       }
     }
@@ -211,24 +223,27 @@ function sortAccounts(accounts, order) {
   var ord = asArray(order)
   if (raw.length <= 1 || ord.length === 0) return raw
 
-  var map = {}
+  var map = Object.create(null)
   for (var i = 0; i < raw.length; i++) {
-    if (raw[i] && raw[i].name) {
-      map[raw[i].name] = raw[i]
+    var acc = raw[i]
+    if (acc && acc.name) {
+      map[acc.name] = acc
     }
   }
 
   var result = []
   for (var j = 0; j < ord.length; j++) {
     var name = String(ord[j] || "")
-    if (map[name]) {
-      result.push(map[name])
-      delete map[name]
+    var item = map[name]
+    if (item) {
+      result.push(item)
+      map[name] = null
     }
   }
   for (var k = 0; k < raw.length; k++) {
-    if (raw[k] && raw[k].name && map[raw[k].name]) {
-      result.push(map[raw[k].name])
+    var acc2 = raw[k]
+    if (acc2 && acc2.name && map[acc2.name]) {
+      result.push(acc2)
     }
   }
   return result
@@ -236,7 +251,7 @@ function sortAccounts(accounts, order) {
 
 function getCountryList(nodes) {
   var raw = asArray(nodes)
-  var map = {}
+  var map = Object.create(null)
   var list = []
   for (var i = 0; i < raw.length; i++) {
     var n = raw[i]
@@ -263,13 +278,14 @@ function filterAndSortOnlineNodes(nodes, countryFilter, sortField, sortAsc, acti
   var raw = asArray(nodes)
   var filtered = []
   var activeIp = String(activeServerIp || "").trim()
+  var filterUpper = countryFilter ? String(countryFilter).toUpperCase() : ""
 
   for (var i = 0; i < raw.length; i++) {
     var n = raw[i]
     if (!n) continue
-    if (countryFilter && countryFilter !== "") {
-      if (String(n.countryCode || "").toUpperCase() !== countryFilter.toUpperCase() &&
-          String(n.country || "") !== countryFilter) {
+    if (filterUpper !== "") {
+      var cCode = String(n.countryCode || "").toUpperCase()
+      if (cCode !== filterUpper && String(n.country || "") !== countryFilter) {
         continue
       }
     }
@@ -277,12 +293,23 @@ function filterAndSortOnlineNodes(nodes, countryFilter, sortField, sortAsc, acti
   }
 
   var field = sortField || "speed"
-  filtered.sort(function(a, b) {
-    var aActive = activeIp !== "" && (a.ip === activeIp || a.hostname === activeIp)
-    var bActive = activeIp !== "" && (b.ip === activeIp || b.hostname === activeIp)
-    if (aActive && !bActive) return -1
-    if (!aActive && bActive) return 1
+  var activeNode = null
+  var rest = []
 
+  if (activeIp !== "") {
+    for (var j = 0; j < filtered.length; j++) {
+      var item = filtered[j]
+      if (!activeNode && (item.ip === activeIp || item.hostname === activeIp)) {
+        activeNode = item
+      } else {
+        rest.push(item)
+      }
+    }
+  } else {
+    rest = filtered
+  }
+
+  rest.sort(function(a, b) {
     var valA = a[field] !== undefined ? a[field] : 0
     var valB = b[field] !== undefined ? b[field] : 0
 
@@ -294,7 +321,11 @@ function filterAndSortOnlineNodes(nodes, countryFilter, sortField, sortAsc, acti
     return (b.speed || 0) - (a.speed || 0)
   })
 
-  return filtered
+  if (activeNode) {
+    rest.unshift(activeNode)
+  }
+
+  return rest
 }
 
 if (typeof module !== "undefined") {

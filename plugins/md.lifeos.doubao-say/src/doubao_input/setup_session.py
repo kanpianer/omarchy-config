@@ -1,6 +1,7 @@
 """Own onboarding microphone/voice tests and temporary appearance previews."""
 from enum import Enum, auto
 import threading
+import math
 
 from doubao_input.i18n import tr
 from doubao_input.timers import TimerScope
@@ -14,10 +15,12 @@ class SetupMode(Enum):
 
 
 class SetupSession:
-    def __init__(self, audio, overlay, feedback, preview, cancel_voice, schedule, cancel):
+    def __init__(self, audio, overlay, feedback, preview, cancel_voice, schedule, cancel,
+                 changed=lambda: None):
         self.audio, self.overlay = audio, overlay
         self.feedback, self.preview = feedback, preview
         self._cancel_voice = cancel_voice
+        self._changed = changed
         self._timers = TimerScope(schedule, cancel)
         self.mode = SetupMode.IDLE
         self.microphone_ok = self.voice_ok = False
@@ -47,11 +50,17 @@ class SetupSession:
         self.mode = SetupMode.APPEARANCE
         self.overlay.show(tr("Appearance preview · microphone off", "外观预览 · 麦克风未开启"))
         self.overlay.set_text(tr("Your words appear here", "识别文字显示在这里"))
-        self._timers.later(2000, self.dismiss)
+        # Synthetic levels demonstrate motion without opening the microphone.
+        self.overlay.push_rms(0.02)
+        for frame in range(1, 30):
+            level = 0.003 + 0.06 * math.sin(frame * math.pi / 15) ** 2
+            self._timers.later(frame * 100, lambda rms=level: self.overlay.push_rms(rms))
+        self._timers.later(3000, self.dismiss)
 
     def begin_voice(self):
         self.dismiss()
         self.voice_ok = False
+        self._changed()
         self.mode = SetupMode.VOICE
         self.preview("")
         self.feedback(tr("Listening. Say a sentence, then press Finish & check result.",
@@ -62,6 +71,7 @@ class SetupSession:
             return False
         self.mode = SetupMode.IDLE
         self.voice_ok = bool(text.strip())
+        self._changed()
         self.preview(text)
         self.feedback(tr("Voice test passed. Your text stayed here — nothing was pasted or sent.",
                          "语音测试成功。文字只保留在这里，没有粘贴或发送到其他窗口。") if self.voice_ok else
@@ -80,18 +90,24 @@ class SetupSession:
     def check_microphone(self):
         self.dismiss()
         self.microphone_ok = False
+        self._changed()
         self.mode = SetupMode.MICROPHONE
         cancelled = self._audio_cancelled = threading.Event()
         peak = 0.0
         received = False
+        rms_blocks = 0
         lock = threading.Lock()
 
         def on_rms(value):
-            nonlocal peak, received
+            nonlocal peak, received, rms_blocks
             if cancelled.is_set():
                 return
             with lock:
-                peak, received = max(peak, value), True
+                rms_blocks += 1
+                # pw-record and some USB devices emit one startup transient.
+                # Keep showing it, but do not let it pass the microphone check.
+                if rms_blocks > 1:
+                    peak, received = max(peak, value), True
             self.overlay.push_rms(value)  # Overlay marshals audio callbacks onto GTK.
 
         self.feedback(tr("Speak normally for three seconds. This check stays on your device.",
@@ -116,6 +132,7 @@ class SetupSession:
             self.mode = SetupMode.IDLE
             with lock:
                 self.microphone_ok = received and peak > 0.003
+            self._changed()
             message = tr("Microphone is working. Continue to the trigger key step.", "麦克风工作正常，请继续设置快捷键。")
             if not self.microphone_ok:
                 message = tr("No audible input. Unmute or select the correct microphone and retry.",

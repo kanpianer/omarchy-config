@@ -1,4 +1,4 @@
-"""Bottom-centred, Voxtype-style recording overlay for Wayland.
+"""Recording overlay: bottom-anchored on layer-shell, WM-positioned on X11.
 
 The public methods are safe to call from worker threads. GTK work is
 marshalled to the main loop while audio samples remain plain Python state
@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from doubao_input.i18n import tr
 from doubao_input.ui.voice_motion import VoiceMotion
+from doubao_input.ui.waveform import draw_waveform
 from doubao_input.product import VERSION
 
 import cairo
@@ -46,11 +47,6 @@ CORNER_PX = 12
 
 CANVAS_WIDTH = 368
 CANVAS_HEIGHT = 31
-WAVE_HEIGHT = 24
-WAVE_SAMPLES = 48
-WAVE_BAR_WIDTH = 4
-WAVE_BAR_GAP = 3
-
 TICK_MS = 16
 PEAK_DECAY_DB_PER_SECOND = 6.0
 RMS_FLOOR_DB = -48.0
@@ -74,15 +70,21 @@ STATE_BORDER_KEYS = {
 
 
 class Overlay:
-    """Non-focusable layer-shell overlay with waveform, meter and live text."""
+    """Non-activating recording overlay with waveform, meter and live text."""
 
     def __init__(self, app_state: AppState | None = None) -> None:
         self._main_thread_id = threading.get_ident()
         self.reduced_motion = False
+        self.waveform_style = "bars"
         self._app_state = app_state
         self._window: Gtk.Window | None = None
         self._label: Gtk.Label | None = None
         self._status_label: Gtk.Label | None = None
+        self._status_row = None
+        self._sparkles = []
+        self._hint_label = None
+        self._waveform = None
+        self._polishing_since = None
         self._canvas: Gtk.Picture | None = None
         self._panel: Gtk.Box | None = None
         self._css_provider: Gtk.CssProvider | None = None
@@ -116,6 +118,34 @@ class Overlay:
 
     def show(self, status: str | None = None) -> None:
         self._run_on_main(self._show, status or tr("Listening…", "聆听中…"))
+
+    def show_polishing(self, text: str) -> None:
+        """Keep polishing activity separate from the transcript."""
+        self._run_on_main(self._show_polishing, text)
+
+    def _show_polishing(self, text: str) -> None:
+        self._show(tr("Polishing…", "润色中"))
+        self._polishing_since = time.monotonic()
+        self._waveform.set_visible(False)
+        self._status_label.set_xalign(0.0)
+        self._status_row.add_css_class("polishing-status")
+        self._status_row.set_tooltip_text(
+            tr("Press shortcut again to use original", "再次按快捷键使用原文"))
+        for star in self._sparkles:
+            star.set_opacity(1.0)
+            star.set_visible(True)
+        self._set_text(text)
+
+    def _clear_polishing(self) -> None:
+        self._polishing_since = None
+        if self._status_row is not None:
+            self._status_label.set_xalign(0.5)
+            self._status_row.remove_css_class("polishing-status")
+            self._status_row.set_tooltip_text(None)
+            self._hint_label.set_visible(False)
+            self._waveform.set_visible(True)
+            for star in self._sparkles:
+                star.set_visible(False)
 
     def hide(self) -> None:
         self._run_on_main(self._hide)
@@ -169,6 +199,7 @@ class Overlay:
 
     def _show(self, status: str) -> None:
         self._ensure_window()
+        self._clear_polishing()
         self._text = ""
         self._status_text = status
         self._status_priority = True
@@ -179,6 +210,7 @@ class Overlay:
         self._arm_ticker()
 
     def _hide(self) -> None:
+        self._clear_polishing()
         self._motion = VoiceMotion()
         if self._update_button:
             self._update_button.popdown()
@@ -204,6 +236,7 @@ class Overlay:
                 self._arm_ticker()
 
     def _set_status(self, status: str) -> None:
+        self._clear_polishing()
         self._status_text = status
         self._status_priority = True
         if self._window is not None:
@@ -216,7 +249,7 @@ class Overlay:
         self._state = value
         if self._css_provider is not None:
             self._load_css()
-        if not self._text:
+        if not self._text and self._polishing_since is None:
             state_status = {
                 "starting": tr("Starting voice recognition…", "正在启动语音识别…"),
                 "recording": tr("Listening…", "正在聆听…"),
@@ -238,11 +271,18 @@ class Overlay:
         win.set_default_size(OVERLAY_WIDTH, OVERLAY_HEIGHT)
         win.set_size_request(OVERLAY_WIDTH, OVERLAY_HEIGHT)
         win.set_focus_on_click(False)
+        win.set_focusable(False)
         win.set_can_focus(False)
         win.add_css_class("doubao-overlay")
 
-        # Layer-shell must be initialized before the window is realized.
-        if Gtk4LayerShell is not None:
+        # GTK can use X11 even inside a Wayland session. Inspect its display,
+        # independently of the desktop protocol used to identify paste targets.
+        if win.get_display().__gtype__.name == "GdkX11Display":
+            gi.require_version("GdkX11", "4.0")
+            from gi.repository import GdkX11
+            win.connect("realize", lambda window: GdkX11.X11Surface.set_user_time(
+                window.get_surface(), 0))
+        elif Gtk4LayerShell is not None and Gtk4LayerShell.is_supported():
             try:
                 Gtk4LayerShell.init_for_window(win)
                 Gtk4LayerShell.set_namespace(win, "doubao-say-overlay")
@@ -263,7 +303,7 @@ class Overlay:
                 logger.exception("Could not initialize gtk4-layer-shell")
         else:
             logger.warning(
-                "Gtk4LayerShell unavailable; compositor will choose overlay position"
+                "Layer-shell unavailable or unsupported; compositor will choose overlay position"
             )
 
         panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
@@ -278,6 +318,7 @@ class Overlay:
         canvas.set_can_shrink(False)
         canvas.set_halign(Gtk.Align.CENTER)
         waveform = Gtk.Overlay()
+        self._waveform = waveform
         waveform.set_child(canvas)
         self._update_button = Gtk.MenuButton(label="", visible=False)
         self._update_button.set_direction(Gtk.ArrowType.NONE)
@@ -315,7 +356,15 @@ class Overlay:
 
         self._status_label = Gtk.Label()
         self._status_label.add_css_class("doubao-overlay-label")
-        panel.append(self._status_label)
+        self._status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._status_row.set_halign(Gtk.Align.FILL)
+        self._status_label.set_hexpand(True)
+        self._status_row.append(self._status_label)
+        for glyph in ("✦", "✧", "✦"):
+            star = Gtk.Label(label=glyph, visible=False)
+            self._sparkles.append(star)
+            self._status_row.append(star)
+        panel.append(self._status_row)
 
         label = Gtk.Label()
         label.set_xalign(0.5)
@@ -326,6 +375,11 @@ class Overlay:
         label.set_hexpand(True)
         label.add_css_class("doubao-overlay-label")
         panel.append(label)
+        self._hint_label = Gtk.Label(
+            label=tr("Press shortcut again to use original", "再次按快捷键使用原文"),
+            visible=False)
+        self._hint_label.add_css_class("doubao-polish-hint")
+        panel.append(self._hint_label)
 
         self._window = win
         self._panel = panel
@@ -339,6 +393,9 @@ class Overlay:
         win.get_style_context().add_provider(
             self._css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
+        for widget in (self._status_row, self._status_label, self._hint_label, label):
+            widget.get_style_context().add_provider(
+                self._css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         win.set_child(panel)
         self._render_canvas()
 
@@ -353,12 +410,23 @@ class Overlay:
                 background: transparent;
             }}
             .doubao-overlay-panel {{
+                color: {self._theme['bright_foreground']};
                 background-color: rgba(
                     {background[0]}, {background[1]}, {background[2]}, 0.85
                 );
                 border: 1px solid {border};
                 border-radius: {CORNER_PX}px;
                 padding: 5px 15px 4px 15px;
+            }}
+            .polishing-status {{
+                color: {self._theme['accent']};
+                padding: 6px 0 10px 0;
+                margin-bottom: 8px;
+            }}
+            .doubao-polish-hint {{
+                font-size: 10px;
+                margin-top: 6px;
+                opacity: 0.7;
             }}
             .doubao-overlay-label {{
                 color: {self._theme['bright_foreground']};
@@ -383,7 +451,9 @@ class Overlay:
     def _arm_ticker(self) -> None:
         if self._ticker_src is None and self._visible:
             self._last_peak_tick = time.monotonic()
-            self._ticker_src = GLib.timeout_add(250 if self.reduced_motion else TICK_MS, self._tick)
+            self._ticker_src = GLib.timeout_add(
+                250 if self.reduced_motion else (33 if self.waveform_style == "basketball" else TICK_MS),
+                self._tick)
 
     def _tick(self) -> bool:
         if not self._visible or self._window is None or self._canvas is None:
@@ -393,6 +463,14 @@ class Overlay:
         now = time.monotonic()
         elapsed = max(0.0, now - self._last_peak_tick)
         self._last_peak_tick = now
+        if self._polishing_since is not None:
+            age = now - self._polishing_since
+            for index, star in enumerate(self._sparkles):
+                opacity = 1.0 if self.reduced_motion else (
+                    0.35 + 0.65 * (0.5 + 0.5 * math.sin(age * math.tau / 2.4 - index * 1.2)))
+                star.set_opacity(opacity)
+            self._hint_label.set_visible(age >= 3.0)
+            return GLib.SOURCE_CONTINUE
         with self._audio_lock:
             since_sample = max(0.0, now - self._latest_rms_at)
             current_db = max(
@@ -414,8 +492,6 @@ class Overlay:
         if self._canvas is None:
             return
         try:
-            samples = self._motion.bars(WAVE_SAMPLES)
-
             surface = cairo.ImageSurface(
                 cairo.FORMAT_ARGB32, CANVAS_WIDTH, CANVAS_HEIGHT
             )
@@ -426,31 +502,9 @@ class Overlay:
 
             accent = _hex_to_unit_rgb(self._theme["accent"])
             foreground = _hex_to_unit_rgb(self._theme["bright_foreground"])
-            gradient = cairo.LinearGradient(0, 0, 0, WAVE_HEIGHT)
-            gradient.add_color_stop_rgba(0, *accent, 0.55)
-            gradient.add_color_stop_rgba(0.5, *foreground, 0.95)
-            gradient.add_color_stop_rgba(1, *accent, 0.55)
-            wave_width = WAVE_SAMPLES * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
-            start_x = (CANVAS_WIDTH - wave_width + WAVE_BAR_GAP) / 2
-            centre_y = WAVE_HEIGHT / 2
-            for index, sample in enumerate(samples):
-                amplitude = 0.85 + sample * (WAVE_HEIGHT / 2 - 2)
-                x = start_x + index * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
-                # A restrained halo follows actual energy, never idle breathing.
-                cr.set_source_rgba(*accent, self._motion.level * 0.18)
-                _rounded_rect(cr, x - 1.5, centre_y - amplitude - 1.5,
-                              WAVE_BAR_WIDTH + 3, amplitude * 2 + 3, 3)
-                cr.fill()
-                cr.set_source(gradient)
-                _rounded_rect(
-                    cr,
-                    x,
-                    centre_y - amplitude,
-                    WAVE_BAR_WIDTH,
-                    amplitude * 2,
-                    WAVE_BAR_WIDTH / 2,
-                )
-                cr.fill()
+            draw_waveform(cr, self.waveform_style, self._motion,
+                          CANVAS_WIDTH, CANVAS_HEIGHT, accent, foreground,
+                          reduced_motion=self.reduced_motion)
 
             texture = _image_surface_to_texture(surface)
             self._canvas.set_paintable(texture)
@@ -519,17 +573,3 @@ def _image_surface_to_texture(surface: cairo.ImageSurface) -> Gdk.Texture:
         GLib.Bytes.new(bytes(data)),
         stride,
     )
-
-
-def _rounded_rect(
-    cr, x: float, y: float, width: float, height: float, radius: float
-) -> None:
-    if width <= 0 or height <= 0:
-        return
-    radius = min(radius, width / 2, height / 2)
-    cr.new_sub_path()
-    cr.arc(x + width - radius, y + radius, radius, -math.pi / 2, 0)
-    cr.arc(x + width - radius, y + height - radius, radius, 0, math.pi / 2)
-    cr.arc(x + radius, y + height - radius, radius, math.pi / 2, math.pi)
-    cr.arc(x + radius, y + radius, radius, math.pi, 3 * math.pi / 2)
-    cr.close_path()
