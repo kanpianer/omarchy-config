@@ -115,4 +115,17 @@ fi
 $control delete 'Test VPN Germany' 'SoftEther VPN Network' vpn_vpn
 grep -F -- '<AccountDelete> <Test VPN Germany>' "$command_log" >/dev/null
 
+timeout_started=$SECONDS
+if FAKE_CONNECTION_DELAY=14 $control connect 'Test VPN Germany' 'SoftEther VPN Network' vpn_vpn >/dev/null 2>&1; then
+  printf 'connection exceeding 9 seconds was accepted\n' >&2
+  exit 1
+fi
+timeout_elapsed=$((SECONDS - timeout_started))
+((timeout_elapsed >= 8 && timeout_elapsed <= 12)) || {
+  printf 'connection timeout took unexpected duration: %d seconds\n' "$timeout_elapsed" >&2
+  exit 1
+}
+[[ ! -e $state_dir/transport-route && ! -L $state_dir/transport-route ]]
+grep -F -- '<AccountDisconnect> <Test VPN Germany>' "$command_log" >/dev/null
+
 printf 'security hardening tests passed\n'

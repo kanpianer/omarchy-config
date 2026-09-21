@@ -30,6 +30,9 @@ route_state_file=
 active_temp_dir=
 CAPTURED_OUTPUT=
 connect_in_progress=false
+connect_start_time=0
+elapsed=0
+remaining=0
 
 fail() {
   printf 'SoftEther VPN: %s\n' "$*" >&2
@@ -358,7 +361,7 @@ resolve_server_addresses() {
   local -A seen=()
   SERVER_ADDRESSES=()
 
-  run_capped "$MAX_RESOLVER_BYTES" 8 getent ahostsv4 "$server_host" \
+  run_capped "$MAX_RESOLVER_BYTES" 4 getent ahostsv4 "$server_host" \
     || fail "could not resolve the VPN server"
   while IFS= read -r line || [[ -n $line ]]; do
     ((line_count += 1))
@@ -452,14 +455,20 @@ case "$action" in
       || fail "the configured NetworkManager profile is missing"
 
     if [[ $action == connect ]]; then
+      connect_start_time=$SECONDS
       connect_in_progress=true
       disconnect_competing_accounts "$account_name"
       prepare_transport_route
       vpn_command AccountConnect "$account_name" \
         || fail "could not start the selected VPN account"
-      if ! run_capped "$MAX_QUERY_BYTES" 55 nmcli --wait 45 connection up \
+      elapsed=$((SECONDS - connect_start_time))
+      remaining=$((9 - elapsed))
+      if ((remaining <= 0)); then
+        fail "connection timed out after 9 seconds"
+      fi
+      if ! run_capped "$MAX_QUERY_BYTES" "$((remaining + 1))" nmcli --wait "$remaining" connection up \
           id "$network_profile" ifname "$adapter_name"; then
-        fail "the tunnel opened, but DHCP and routing did not complete"
+        fail "connection timed out or failed to complete routing within 9 seconds"
       fi
       connect_in_progress=false
     else

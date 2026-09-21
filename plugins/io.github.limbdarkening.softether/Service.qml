@@ -113,7 +113,10 @@ Item {
     if (!installed) return "SoftEther is not installed"
     if (!serviceAvailable) return "SoftEther client service is stopped"
     if (savedAccounts.length === 0 && !activeAccount) return "No imported VPN profiles"
-    if (lastError !== "") return "Connection failed · " + nodeName
+    if (lastError !== "") {
+      if (lastError.indexOf("timed out") !== -1) return "Connection timed out · " + nodeName
+      return "Connection failed · " + nodeName
+    }
     if (busy && actionKind === "connect") {
       var targetName = actionAccountName === "VPNGate_Direct" && directConnectedNode
         ? directConnectedNode.name : (actionAccountName || nodeName)
@@ -247,6 +250,8 @@ Item {
   }
 
   function disconnectVpn() {
+    stopConnectionTimeout()
+    connectionTimedOut = false
     if (!settingsValid) {
       lastError = settingsError
       return
@@ -283,6 +288,7 @@ Item {
     var target = selectedAccount || (accounts.length > 0 ? accounts[0] : null)
     if (target) {
       desiredState = 1
+      startConnectionTimeout()
       var current = activeAccount
       // This only runs while the switch is off, and it is off because nothing
       // is routed: any session the client still lists is stale, so tear it down
@@ -309,6 +315,7 @@ Item {
     selectedAccountName = account.name
     selectionRequested(account.name)
     desiredState = 1
+    startConnectionTimeout()
     var current = activeAccount
     // Picking the node the client still lists while the tunnel is down has to
     // reconnect, not fall through to a connect the client would reject.
@@ -376,6 +383,11 @@ Item {
         lastError = "Invalid SoftEther account name"
       return
     }
+    if (kind === "connect") {
+      startConnectionTimeout()
+    } else {
+      stopConnectionTimeout()
+    }
     actionKind = kind
     actionAccountName = accountName
     connectAfterDisconnect = String(nextAccountName || "")
@@ -384,9 +396,9 @@ Item {
     lastError = ""
     _actionOutput = ""
     _actionError = ""
-    // The forced-kill grace period covers the helper's bounded disconnect and
-    // removal of all eight possible transport routes after TERM.
-    actionProcess.command = ["timeout", "--signal=TERM", "--kill-after=70s", "100s",
+    var actionTimeout = kind === "connect" ? "11s" : "100s"
+    var killTimeout = kind === "connect" ? "3s" : "70s"
+    actionProcess.command = ["timeout", "--signal=TERM", "--kill-after=" + killTimeout, actionTimeout,
       controlPath, kind, accountName, networkProfileName, adapterName]
     actionProcess.running = true
   }
@@ -470,6 +482,7 @@ Item {
 
     directConnectedNode = node
     desiredState = 1
+    startConnectionTimeout()
 
     if (current) {
       pendingDirectConnectNode = node
@@ -482,6 +495,7 @@ Item {
 
   function startDirectOnlineProcess(node) {
     if (!node || !node.ip || !node.port) return
+    startConnectionTimeout()
     directConnectedNode = node
     actionKind = "connect"
     actionAccountName = "VPNGate_Direct"
@@ -500,6 +514,57 @@ Item {
     if (!settingsValid) lastError = settingsError
     else if (lastError.indexOf("Invalid ") === 0) lastError = ""
   }
+  onUsableChanged: {
+    if (usable) {
+      stopConnectionTimeout()
+    }
+  }
+
+  property bool connectionTimedOut: false
+
+  Timer {
+    id: connectionTimeoutTimer
+    interval: 9000
+    repeat: false
+    onTriggered: root.handleConnectionTimeout()
+  }
+
+  function startConnectionTimeout() {
+    connectionTimedOut = false
+    connectionTimeoutTimer.restart()
+  }
+
+  function stopConnectionTimeout() {
+    connectionTimeoutTimer.stop()
+  }
+
+  function handleConnectionTimeout() {
+    connectionTimeoutTimer.stop()
+    if (root.usable && root.connectedAccount !== null) return
+
+    connectionTimedOut = true
+    lastError = "Connection timed out after 9 seconds"
+    desiredState = -1
+    actionKind = ""
+    actionAccountName = ""
+    actionStatus = ""
+
+    if (directOnlineProcess.running) {
+      directOnlineProcess.running = false
+    }
+
+    if (actionProcess.running) {
+      actionProcess.running = false
+    }
+
+    disconnectVpn()
+
+    notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-u", "critical",
+      "SoftEther VPN", "Connection timed out after 9 seconds"]
+    notifyProcess.running = true
+
+    delayedRefresh.restart()
+  }
 
   Timer {
     interval: root.refreshIntervalSec * 1000
@@ -510,7 +575,7 @@ Item {
 
   Timer {
     id: delayedRefresh
-    interval: 800
+    interval: 300
     repeat: false
     onTriggered: root.refresh()
   }
@@ -588,6 +653,9 @@ Item {
         // soon as a session appears would drop the switch back to off while the
         // address and default route are still being installed.
         if (root.desiredState === 1 && (root.usable || root.connectedAccount !== null)) root.desiredState = -1
+        if (root.usable || root.connectedAccount !== null) {
+          root.stopConnectionTimeout()
+        }
         if (root.desiredState === 0 && !root.activeAccount) root.desiredState = -1
         else if (root.desiredState === 0 && root.activeAccount && !actionProcess.running) {
           root.disconnectVpn()
@@ -665,8 +733,15 @@ Item {
       root.actionStatus = ""
 
       if (exitCode !== 0 || stdout === null || stderr === null) {
+        root.stopConnectionTimeout()
         if (root.desiredState === 0) {
-          root.lastError = ""
+          if (root.connectionTimedOut) {
+            root.desiredState = -1
+            root.lastError = "Connection timed out after 9 seconds"
+            root.connectionTimedOut = false
+          } else {
+            root.lastError = ""
+          }
           settleDesiredState.restart()
           delayedRefresh.restart()
           return
@@ -889,6 +964,7 @@ Item {
         root.actionStatus = ""
         root.runAction("connect", "VPNGate_Direct", "")
       } else {
+        root.stopConnectionTimeout()
         root.actionKind = ""
         root.actionAccountName = ""
         root.actionStatus = ""
