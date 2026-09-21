@@ -129,4 +129,55 @@ assert.deepEqual(model.asArray(undefined), [])
 assert.deepEqual(model.asArray(["a", "b"]), ["a", "b"])
 assert.deepEqual(model.sortAccounts([acc1, acc2, acc3], arrayLikeOrder), [acc2, acc3, acc1])
 
+// Test getCountryList
+const sampleOnlineNodes = [
+  { name: "#JP 1.1.1.1", ip: "1.1.1.1", countryCode: "JP", country: "Japan", flag: "🇯🇵", speed: 500, sessions: 10, uptime: 1000, ping: 15 },
+  { name: "#US 2.2.2.2", ip: "2.2.2.2", countryCode: "US", country: "United States", flag: "🇺🇸", speed: 800, sessions: 5, uptime: 5000, ping: 50 },
+  { name: "#JP 3.3.3.3", ip: "3.3.3.3", countryCode: "JP", country: "Japan", flag: "🇯🇵", speed: 200, sessions: 20, uptime: 2000, ping: 8 }
+]
+const countries = model.getCountryList(sampleOnlineNodes)
+assert.equal(countries.length, 2)
+assert.equal(countries[0].code, "JP")
+assert.equal(countries[0].count, 2)
+assert.equal(countries[1].code, "US")
+assert.equal(countries[1].count, 1)
+
+// Test filterAndSortOnlineNodes: Country filter
+const jpOnly = model.filterAndSortOnlineNodes(sampleOnlineNodes, "JP", "speed", false, "")
+assert.equal(jpOnly.length, 2)
+assert.equal(jpOnly[0].ip, "1.1.1.1") // 500 > 200
+assert.equal(jpOnly[1].ip, "3.3.3.3")
+
+// Test filterAndSortOnlineNodes: Active node pinned to top
+const activePinned = model.filterAndSortOnlineNodes(sampleOnlineNodes, "", "speed", false, "3.3.3.3")
+assert.equal(activePinned.length, 3)
+assert.equal(activePinned[0].ip, "3.3.3.3") // Active node pinned to index 0 even though speed is lowest
+assert.equal(activePinned[1].ip, "2.2.2.2") // Then sorted by speed
+assert.equal(activePinned[2].ip, "1.1.1.1")
+
+// Test filterAndSortOnlineNodes: Sessions sort (descending)
+const bySessions = model.filterAndSortOnlineNodes(sampleOnlineNodes, "", "sessions", false, "")
+assert.equal(bySessions[0].sessions, 20)
+assert.equal(bySessions[1].sessions, 10)
+assert.equal(bySessions[2].sessions, 5)
+
+// Test filterAndSortOnlineNodes: Uptime sort (ascending)
+const byUptimeAsc = model.filterAndSortOnlineNodes(sampleOnlineNodes, "", "uptime", true, "")
+assert.equal(byUptimeAsc[0].uptime, 1000)
+assert.equal(byUptimeAsc[1].uptime, 2000)
+assert.equal(byUptimeAsc[2].uptime, 5000)
+
+// Test filterAndSortOnlineNodes: Ping sort (ascending: lowest ping first)
+const byPingAsc = model.filterAndSortOnlineNodes(sampleOnlineNodes, "", "ping", true, "")
+assert.equal(byPingAsc[0].ping, 8)
+assert.equal(byPingAsc[1].ping, 15)
+assert.equal(byPingAsc[2].ping, 50)
+
+// Test filterAndSortOnlineNodes: Ping sort (descending: highest ping first)
+const byPingDesc = model.filterAndSortOnlineNodes(sampleOnlineNodes, "", "ping", false, "")
+assert.equal(byPingDesc[0].ping, 50)
+assert.equal(byPingDesc[1].ping, 15)
+assert.equal(byPingDesc[2].ping, 8)
+
 console.log("model state tests passed")
+

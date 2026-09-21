@@ -43,6 +43,20 @@ Panel {
   property string confirmMessage: ""
   property string confirmButtonText: "Connect"
 
+  property bool showOnlineNodes: false
+  property string selectedOnlineCountry: ""
+  property string selectedOnlineCountryName: "All"
+  property string selectedOnlineCountryFlag: ""
+  property string onlineSortField: "speed"
+  property bool onlineSortAsc: false
+  property bool countryPopupOpen: false
+
+  readonly property var countryList: Model.getCountryList(vpn.onlineNodes)
+  readonly property string activeServerIp: (vpn.activeAccount && vpn.activeAccount.server)
+    ? vpn.activeAccount.server.split(":")[0].trim() : ""
+  readonly property var filteredOnlineNodes: Model.filterAndSortOnlineNodes(
+    vpn.onlineNodes, selectedOnlineCountry, onlineSortField, onlineSortAsc, activeServerIp)
+
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
@@ -136,6 +150,40 @@ Panel {
       pendingAction = "connect_account"
       pendingAccount = account
       confirmMessage = "Connect to VPN node \"" + account.name + "\"?"
+      confirmButtonText = "Connect"
+    }
+    confirmDialog.selectedIndex = 1
+    confirmDialog.opened = true
+  }
+
+  function isNodeSaved(ip) {
+    if (!ip) return false
+    var cleanIp = String(ip).trim()
+    for (var i = 0; i < vpn.accounts.length; i++) {
+      var acc = vpn.accounts[i]
+      var host = (acc.server || "").split(":")[0].trim()
+      if (host === cleanIp) return true
+    }
+    return false
+  }
+
+  function chooseOnlineNode(node) {
+    if (!node || !node.name) return
+    var isActive = root.activeServerIp !== "" && (node.ip === root.activeServerIp || node.hostname === root.activeServerIp)
+    if (isActive) {
+      pendingAction = "disconnect"
+      pendingAccount = null
+      confirmMessage = "Disconnect from VPN?"
+      confirmButtonText = "Disconnect"
+    } else if (vpn.active || vpn.connectedAccount !== null || vpn.activeAccount !== null) {
+      pendingAction = "connect_online"
+      pendingAccount = node
+      confirmMessage = "Disconnect current VPN and connect to VPN Gate node \"" + node.name + "\" (" + node.ip + ")?"
+      confirmButtonText = "Connect"
+    } else {
+      pendingAction = "connect_online"
+      pendingAccount = node
+      confirmMessage = "Connect to VPN Gate node \"" + node.name + "\" (" + node.ip + ")?"
       confirmButtonText = "Connect"
     }
     confirmDialog.selectedIndex = 1
@@ -261,16 +309,21 @@ Panel {
     }
     cursorActive = false
     confirmDialog.opened = false
+    countryPopupOpen = false
     dragActive = false
     pendingAction = ""
     pendingAccount = null
     flickable.contentY = 0
     vpn.refresh()
+    if (showOnlineNodes && vpn.onlineNodes.length === 0 && !vpn.fetchingOnline) {
+      vpn.fetchOnlineNodes()
+    }
     Qt.callLater(function() {
       keyCatcher.forceActiveFocus()
     })
   } else {
     confirmDialog.opened = false
+    countryPopupOpen = false
     dragActive = false
     pendingAction = ""
     pendingAccount = null
@@ -358,7 +411,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(349))
+    contentWidth: panel.fittedContentWidth(Style.space(454))
     contentHeight: panel.fittedContentHeight(headerColumn.implicitHeight + (scrollColumn.implicitHeight > 0 ? flickable.anchors.topMargin + scrollColumn.implicitHeight : 0) + (importFooter ? importFooter.height + flickable.anchors.bottomMargin : Style.space(45)), Style.space(600))
 
     PanelKeyCatcher {
@@ -385,6 +438,10 @@ Panel {
         if (row) root.requestDeleteAccount(row)
       }
       onCloseRequested: {
+        if (root.countryPopupOpen) {
+          root.countryPopupOpen = false
+          return
+        }
         if (root.dragActive) {
           root.cancelDragAccount()
           return
@@ -500,6 +557,223 @@ Panel {
         PanelSeparator {
           foreground: root.foreground
         }
+
+        Column {
+          id: onlineFixedHeader
+          visible: root.showOnlineNodes
+          width: parent.width
+          spacing: Style.space(8)
+
+          RowLayout {
+            width: parent.width
+
+            Text {
+              text: "VPN GATE NODES" + (root.filteredOnlineNodes.length > 0 ? " (" + root.filteredOnlineNodes.length + ")" : "")
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.0
+              Layout.fillWidth: true
+            }
+
+            PanelActionButton {
+              id: refreshOnlineBtn
+              iconText: "󰑐"
+              tooltipText: "Refresh online nodes"
+              foreground: root.dim
+              hoverColor: root.foreground
+              fontFamily: root.fontFamily
+              enabled: !vpn.fetchingOnline
+              onClicked: vpn.fetchOnlineNodes(true)
+
+              NumberAnimation on rotation {
+                running: vpn.fetchingOnline
+                from: 0
+                to: 360
+                duration: 900
+                loops: Animation.Infinite
+                onRunningChanged: if (!running) refreshOnlineBtn.rotation = 0
+              }
+            }
+          }
+
+          Row {
+            id: filterButtonsRow
+            width: parent.width
+            spacing: Style.space(5)
+            readonly property real buttonWidth: Math.floor((width - spacing * 4) / 5)
+
+            BorderSurface {
+              id: countryFilterBtn
+              width: filterButtonsRow.buttonWidth
+              height: Style.space(26)
+              color: root.selectedOnlineCountry !== "" ? Util.alpha(Color.accent, 0.15) : "transparent"
+              borderSpec: Border.flat(root.selectedOnlineCountry !== "" ? Color.accent : Util.alpha(root.foreground, 0.25), Style.normalBorderWidth)
+              radius: Style.cornerRadius
+
+              RowLayout {
+                anchors.centerIn: parent
+                spacing: Style.space(3)
+
+                Text {
+                  text: root.selectedOnlineCountry === "" ? "Country" : (root.selectedOnlineCountryFlag + " " + root.selectedOnlineCountry)
+                  color: root.selectedOnlineCountry !== "" ? Color.accent : root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: root.selectedOnlineCountry !== ""
+                  elide: Text.ElideRight
+                }
+
+                Text {
+                  text: root.countryPopupOpen ? "▴" : "▾"
+                  color: root.selectedOnlineCountry !== "" ? Color.accent : root.dim
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.countryPopupOpen = !root.countryPopupOpen
+              }
+            }
+
+            BorderSurface {
+              id: speedFilterBtn
+              width: filterButtonsRow.buttonWidth
+              height: Style.space(26)
+              color: root.onlineSortField === "speed" ? Util.alpha(Color.accent, 0.15) : "transparent"
+              borderSpec: Border.flat(root.onlineSortField === "speed" ? Color.accent : Util.alpha(root.foreground, 0.25), Style.normalBorderWidth)
+              radius: Style.cornerRadius
+
+              Text {
+                anchors.centerIn: parent
+                text: "Speed" + (root.onlineSortField === "speed" ? (root.onlineSortAsc ? " ▲" : " ▼") : "")
+                color: root.onlineSortField === "speed" ? Color.accent : root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: root.onlineSortField === "speed"
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (root.onlineSortField === "speed") {
+                    root.onlineSortAsc = !root.onlineSortAsc
+                  } else {
+                    root.onlineSortField = "speed"
+                    root.onlineSortAsc = false
+                  }
+                }
+              }
+            }
+
+            BorderSurface {
+              id: sessionsFilterBtn
+              width: filterButtonsRow.buttonWidth
+              height: Style.space(26)
+              color: root.onlineSortField === "sessions" ? Util.alpha(Color.accent, 0.15) : "transparent"
+              borderSpec: Border.flat(root.onlineSortField === "sessions" ? Color.accent : Util.alpha(root.foreground, 0.25), Style.normalBorderWidth)
+              radius: Style.cornerRadius
+
+              Text {
+                anchors.centerIn: parent
+                text: "Sessions" + (root.onlineSortField === "sessions" ? (root.onlineSortAsc ? " ▲" : " ▼") : "")
+                color: root.onlineSortField === "sessions" ? Color.accent : root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: root.onlineSortField === "sessions"
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (root.onlineSortField === "sessions") {
+                    root.onlineSortAsc = !root.onlineSortAsc
+                  } else {
+                    root.onlineSortField = "sessions"
+                    root.onlineSortAsc = false
+                  }
+                }
+              }
+            }
+
+            BorderSurface {
+              id: uptimeFilterBtn
+              width: filterButtonsRow.buttonWidth
+              height: Style.space(26)
+              color: root.onlineSortField === "uptime" ? Util.alpha(Color.accent, 0.15) : "transparent"
+              borderSpec: Border.flat(root.onlineSortField === "uptime" ? Color.accent : Util.alpha(root.foreground, 0.25), Style.normalBorderWidth)
+              radius: Style.cornerRadius
+
+              Text {
+                anchors.centerIn: parent
+                text: "Uptime" + (root.onlineSortField === "uptime" ? (root.onlineSortAsc ? " ▲" : " ▼") : "")
+                color: root.onlineSortField === "uptime" ? Color.accent : root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: root.onlineSortField === "uptime"
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (root.onlineSortField === "uptime") {
+                    root.onlineSortAsc = !root.onlineSortAsc
+                  } else {
+                    root.onlineSortField = "uptime"
+                    root.onlineSortAsc = false
+                  }
+                }
+              }
+            }
+
+            BorderSurface {
+              id: pingFilterBtn
+              width: filterButtonsRow.buttonWidth
+              height: Style.space(26)
+              color: root.onlineSortField === "ping" ? Util.alpha(Color.accent, 0.15) : "transparent"
+              borderSpec: Border.flat(root.onlineSortField === "ping" ? Color.accent : Util.alpha(root.foreground, 0.25), Style.normalBorderWidth)
+              radius: Style.cornerRadius
+
+              Text {
+                anchors.centerIn: parent
+                text: "Ping" + (root.onlineSortField === "ping" ? (root.onlineSortAsc ? " ▲" : " ▼") : "")
+                color: root.onlineSortField === "ping" ? Color.accent : root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: root.onlineSortField === "ping"
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (root.onlineSortField === "ping") {
+                    root.onlineSortAsc = !root.onlineSortAsc
+                  } else {
+                    root.onlineSortField = "ping"
+                    root.onlineSortAsc = true
+                  }
+                }
+              }
+            }
+          }
+
+          PanelSeparator {
+            width: parent.width
+            foreground: root.foreground
+          }
+        }
       }
 
       Flickable {
@@ -526,222 +800,372 @@ Panel {
           width: flickable.width
           spacing: Style.space(12)
 
-          PanelSectionHeader {
-            text: "VPN NODES"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-          }
-
-          Text {
-            visible: vpn.serviceAvailable && vpn.accounts.length === 0
-            width: parent.width
-            text: "Import a SoftEther connection profile to add a country."
-            textFormat: Text.PlainText
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            wrapMode: Text.WordWrap
-          }
-
-          Text {
-            visible: !vpn.serviceAvailable
-            width: parent.width
-            text: "Start the softethervpn-client service to load VPN profiles."
-            textFormat: Text.PlainText
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            wrapMode: Text.WordWrap
-          }
-
           Column {
-            id: accountsColumn
+            id: localNodesView
+            visible: !root.showOnlineNodes
             width: parent.width
-            spacing: Style.space(6)
+            spacing: Style.space(12)
 
-            Repeater {
-              id: accountsRepeater
-              model: root.displayAccounts
+            PanelSectionHeader {
+              text: "SAVED NODES"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
 
-              CursorSurface {
-                id: accountRow
-                required property var modelData
-                required property int index
-                property var account: modelData
-                readonly property bool selectedAccount: vpn.selectedAccountName === account.name
-                readonly property bool connectedAccount: account.statusKind === "connected" || account.statusKind === "connecting"
-                readonly property bool isDragging: root.dragActive && root.dragSourceIndex === index
+            Text {
+              visible: vpn.serviceAvailable && vpn.accounts.length === 0
+              width: parent.width
+              text: "No saved VPN profiles. Import a .vpn file or select from online nodes."
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+            }
 
-                width: parent.width
-                implicitHeight: rowContent.implicitHeight + Style.spacing.rowPaddingX
-                hasCursor: (root.cursorActive && root.accountIndex === index) || isDragging
-                current: selectedAccount || isDragging
-                foreground: root.foreground
-                z: isDragging ? 100 : 1
-                scale: isDragging ? 1.02 : 1.0
+            Text {
+              visible: !vpn.serviceAvailable
+              width: parent.width
+              text: "Start the softethervpn-client service to load VPN profiles."
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+            }
 
-                Behavior on scale { NumberAnimation { duration: 100 } }
+            Column {
+              id: accountsColumn
+              width: parent.width
+              spacing: Style.space(6)
 
-                transform: Translate {
-                  y: {
-                    if (!root.dragActive) return 0
-                    if (accountRow.isDragging) {
-                      return root.dragCurrentY - root.dragStartY
+              Repeater {
+                id: accountsRepeater
+                model: root.displayAccounts
+
+                CursorSurface {
+                  id: accountRow
+                  required property var modelData
+                  required property int index
+                  property var account: modelData
+                  readonly property bool selectedAccount: vpn.selectedAccountName === account.name
+                  readonly property bool connectedAccount: account.statusKind === "connected" || account.statusKind === "connecting"
+                  readonly property bool isDragging: root.dragActive && root.dragSourceIndex === index
+
+                  width: parent.width
+                  implicitHeight: rowContent.implicitHeight + Style.spacing.rowPaddingX
+                  hasCursor: (root.cursorActive && root.accountIndex === index) || isDragging
+                  current: selectedAccount || isDragging
+                  foreground: root.foreground
+                  z: isDragging ? 100 : 1
+                  scale: isDragging ? 1.02 : 1.0
+
+                  Behavior on scale { NumberAnimation { duration: 100 } }
+
+                  transform: Translate {
+                    y: {
+                      if (!root.dragActive) return 0
+                      if (accountRow.isDragging) {
+                        return root.dragCurrentY - root.dragStartY
+                      }
+                      var src = root.dragSourceIndex
+                      var tgt = root.dragTargetIndex
+                      if (src === tgt) return 0
+
+                      var draggedItem = accountsRepeater.itemAt(src)
+                      var moveDistance = (draggedItem ? draggedItem.height : accountRow.height) + accountsColumn.spacing
+
+                      if (src < tgt) {
+                        if (accountRow.index > src && accountRow.index <= tgt) return -moveDistance
+                      } else if (src > tgt) {
+                        if (accountRow.index >= tgt && accountRow.index < src) return moveDistance
+                      }
+                      return 0
                     }
-                    var src = root.dragSourceIndex
-                    var tgt = root.dragTargetIndex
-                    if (src === tgt) return 0
 
-                    var draggedItem = accountsRepeater.itemAt(src)
-                    var moveDistance = (draggedItem ? draggedItem.height : accountRow.height) + accountsColumn.spacing
-
-                    if (src < tgt) {
-                      if (accountRow.index > src && accountRow.index <= tgt) return -moveDistance
-                    } else if (src > tgt) {
-                      if (accountRow.index >= tgt && accountRow.index < src) return moveDistance
-                    }
-                    return 0
-                  }
-
-                  Behavior on y {
-                    enabled: !accountRow.isDragging && root.dragActive
-                    NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
-                  }
-                }
-
-                MouseArea {
-                  id: rowMouse
-                  anchors.fill: parent
-                  hoverEnabled: !root.dragActive
-                  enabled: !vpn.busy
-                  cursorShape: root.dragActive ? Qt.ClosedHandCursor : (enabled ? Qt.PointingHandCursor : Qt.ArrowCursor)
-                  pressAndHoldInterval: 300
-
-                  onEntered: {
-                    if (!root.dragActive) {
-                      root.cursorActive = true
-                      root.accountIndex = accountRow.index
+                    Behavior on y {
+                      enabled: !accountRow.isDragging && root.dragActive
+                      NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
                     }
                   }
 
-                  onPressAndHold: function(mouse) {
-                    if (vpn.busy || root.displayAccounts.length <= 1) return
-                    var mappedY = rowMouse.mapToItem(accountsColumn, 0, mouse.y).y
-                    root.startDragAccount(accountRow.index, mappedY)
-                  }
+                  MouseArea {
+                    id: rowMouse
+                    anchors.fill: parent
+                    hoverEnabled: !root.dragActive
+                    enabled: !vpn.busy
+                    cursorShape: root.dragActive ? Qt.ClosedHandCursor : (enabled ? Qt.PointingHandCursor : Qt.ArrowCursor)
+                    pressAndHoldInterval: 300
 
-                  onPositionChanged: function(mouse) {
-                    if (root.dragActive && root.dragSourceIndex === accountRow.index) {
+                    onEntered: {
+                      if (!root.dragActive) {
+                        root.cursorActive = true
+                        root.accountIndex = accountRow.index
+                      }
+                    }
+
+                    onPressAndHold: function(mouse) {
+                      if (vpn.busy || root.displayAccounts.length <= 1) return
                       var mappedY = rowMouse.mapToItem(accountsColumn, 0, mouse.y).y
-                      root.updateDragAccount(mappedY)
+                      root.startDragAccount(accountRow.index, mappedY)
+                    }
+
+                    onPositionChanged: function(mouse) {
+                      if (root.dragActive && root.dragSourceIndex === accountRow.index) {
+                        var mappedY = rowMouse.mapToItem(accountsColumn, 0, mouse.y).y
+                        root.updateDragAccount(mappedY)
+                      }
+                    }
+
+                    onReleased: function(mouse) {
+                      if (root.dragActive && root.dragSourceIndex === accountRow.index) {
+                        root.finishDragAccount()
+                      }
+                    }
+
+                    onCanceled: {
+                      if (root.dragActive && root.dragSourceIndex === accountRow.index) {
+                        root.cancelDragAccount()
+                      }
+                    }
+
+                    onClicked: {
+                      if (root.suppressClick) {
+                        root.suppressClick = false
+                        return
+                      }
+                      root.chooseAccount(accountRow.account)
                     }
                   }
 
-                  onReleased: function(mouse) {
-                    if (root.dragActive && root.dragSourceIndex === accountRow.index) {
-                      root.finishDragAccount()
+                  RowLayout {
+                    id: rowContent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Style.space(10)
+                    anchors.rightMargin: Style.space(10)
+                    spacing: Style.space(8)
+
+                    Rectangle {
+                      width: Style.space(7)
+                      height: width
+                      radius: width / 2
+                      color: accountRow.connectedAccount ? root.foreground : root.dim
+                      opacity: accountRow.connectedAccount ? 1.0 : 0.35
+                      Layout.alignment: Qt.AlignVCenter
                     }
-                  }
 
-                  onCanceled: {
-                    if (root.dragActive && root.dragSourceIndex === accountRow.index) {
-                      root.cancelDragAccount()
+                    ColumnLayout {
+                      Layout.fillWidth: true
+                      spacing: Style.space(1)
+
+                      Text {
+                        Layout.fillWidth: true
+                        text: String(accountRow.account.flag || "🏳") + "  " + (accountRow.account.name || accountRow.account.country)
+                        textFormat: Text.PlainText
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        font.bold: accountRow.selectedAccount
+                        elide: Text.ElideRight
+                      }
+
+                      Text {
+                        Layout.fillWidth: true
+                        text: (accountRow.account.statusKind === "connected" ? "Connected · "
+                          : (accountRow.account.statusKind === "connecting" ? "Connecting · " : ""))
+                          + (accountRow.account.country && accountRow.account.country !== "Unknown" ? accountRow.account.country + " · " : "")
+                          + accountRow.account.server
+                        textFormat: Text.PlainText
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                      }
                     }
-                  }
-
-                  onClicked: {
-                    if (root.suppressClick) {
-                      root.suppressClick = false
-                      return
-                    }
-                    root.chooseAccount(accountRow.account)
-                  }
-                }
-
-                RowLayout {
-                  id: rowContent
-                  anchors.left: parent.left
-                  anchors.right: parent.right
-                  anchors.verticalCenter: parent.verticalCenter
-                  anchors.leftMargin: Style.space(10)
-                  anchors.rightMargin: Style.space(10)
-                  spacing: Style.space(8)
-
-                  Rectangle {
-                    width: Style.space(7)
-                    height: width
-                    radius: width / 2
-                    color: accountRow.connectedAccount ? root.foreground : root.dim
-                    opacity: accountRow.connectedAccount ? 1.0 : 0.35
-                    Layout.alignment: Qt.AlignVCenter
-                  }
-
-                  ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: Style.space(1)
 
                     Text {
-                      Layout.fillWidth: true
-                      text: String(accountRow.account.flag || "🏳") + "  " + (accountRow.account.name || accountRow.account.country)
+                      opacity: accountRow.selectedAccount ? 1.0 : 0.0
+                      text: "✓"
                       textFormat: Text.PlainText
                       color: root.foreground
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.body
-                      font.bold: accountRow.selectedAccount
-                      elide: Text.ElideRight
+                      font.bold: true
+                      Layout.alignment: Qt.AlignVCenter
                     }
 
-                    Text {
-                      Layout.fillWidth: true
-                      text: (accountRow.account.statusKind === "connected" ? "Connected · "
-                        : (accountRow.account.statusKind === "connecting" ? "Connecting · " : ""))
-                        + (accountRow.account.country && accountRow.account.country !== "Unknown" ? accountRow.account.country + " · " : "")
-                        + accountRow.account.server
-                      textFormat: Text.PlainText
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                      elide: Text.ElideRight
+                    PanelActionButton {
+                      id: deleteButton
+                      visible: !root.dragActive
+                      enabled: !vpn.busy
+                      iconText: "󰅙"
+                      tooltipText: "Delete node"
+                      foreground: root.dim
+                      hoverColor: root.urgent
+                      fontFamily: root.fontFamily
+                      Layout.alignment: Qt.AlignVCenter
+                      onClicked: root.requestDeleteAccount(accountRow.account)
                     }
-                  }
-
-                  Text {
-                    opacity: accountRow.selectedAccount ? 1.0 : 0.0
-                    text: "✓"
-                    textFormat: Text.PlainText
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    font.bold: true
-                    Layout.alignment: Qt.AlignVCenter
-                  }
-
-                  PanelActionButton {
-                    id: deleteButton
-                    visible: !root.dragActive
-                    enabled: !vpn.busy
-                    iconText: "󰅙"
-                    tooltipText: "Delete node"
-                    foreground: root.dim
-                    hoverColor: root.urgent
-                    fontFamily: root.fontFamily
-                    Layout.alignment: Qt.AlignVCenter
-                    onClicked: root.requestDeleteAccount(accountRow.account)
                   }
                 }
               }
             }
           }
 
-          Text {
-            visible: vpn.tunnelAddress !== ""
+          Column {
+            id: onlineNodesView
+            visible: root.showOnlineNodes
             width: parent.width
-            text: "Tunnel address  " + vpn.tunnelAddress
-            textFormat: Text.PlainText
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            horizontalAlignment: Text.AlignHCenter
+            spacing: Style.space(8)
+
+
+            Text {
+              visible: vpn.fetchingOnline
+              width: parent.width
+              text: "Loading VPN Gate nodes…"
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+              visible: !vpn.fetchingOnline && vpn.onlineError !== ""
+              width: parent.width
+              text: vpn.onlineError + ". Click refresh to retry."
+              textFormat: Text.PlainText
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+              visible: !vpn.fetchingOnline && vpn.onlineError === "" && vpn.onlineNodes.length === 0
+              width: parent.width
+              text: "No VPN Gate nodes loaded. Click refresh to fetch."
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+              visible: !vpn.fetchingOnline && vpn.onlineNodes.length > 0 && root.filteredOnlineNodes.length === 0
+              width: parent.width
+              text: "No nodes match the selected country filter."
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(6)
+
+              Repeater {
+                id: onlineNodesRepeater
+                model: root.filteredOnlineNodes
+
+                CursorSurface {
+                  id: onlineRow
+                  required property var modelData
+                  required property int index
+                  property var node: modelData
+                  readonly property bool isNodeActive: root.activeServerIp !== "" && (node.ip === root.activeServerIp || node.hostname === root.activeServerIp)
+                  readonly property bool alreadySaved: root.isNodeSaved(node.ip)
+
+                  width: parent.width
+                  implicitHeight: onlineRowContent.implicitHeight + Style.spacing.rowPaddingX
+                  foreground: root.foreground
+                  current: isNodeActive
+
+                  MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.chooseOnlineNode(onlineRow.node)
+                  }
+
+                  RowLayout {
+                    id: onlineRowContent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Style.space(10)
+                    anchors.rightMargin: Style.space(10)
+                    spacing: Style.space(8)
+
+                    Rectangle {
+                      width: Style.space(7)
+                      height: width
+                      radius: width / 2
+                      color: onlineRow.isNodeActive ? root.foreground : root.dim
+                      opacity: onlineRow.isNodeActive ? 1.0 : 0.35
+                      Layout.alignment: Qt.AlignVCenter
+                    }
+
+                    ColumnLayout {
+                      Layout.fillWidth: true
+                      spacing: Style.space(1)
+
+                      Text {
+                        Layout.fillWidth: true
+                        text: String(onlineRow.node.flag || "🏳") + "  " + onlineRow.node.name
+                        textFormat: Text.PlainText
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        font.bold: onlineRow.isNodeActive
+                        elide: Text.ElideRight
+                      }
+
+                      Text {
+                        Layout.fillWidth: true
+                        text: onlineRow.node.speedText + " · " + onlineRow.node.ping + " ms · "
+                          + onlineRow.node.sessions + " users · " + onlineRow.node.uptimeText + " · "
+                          + onlineRow.node.ip + ":" + onlineRow.node.port
+                        textFormat: Text.PlainText
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                      }
+                    }
+
+                    PanelActionButton {
+                      visible: !onlineRow.alreadySaved
+                      enabled: !vpn.addingOnline && !vpn.busy
+                      iconText: "󰐕"
+                      tooltipText: "Add to saved nodes"
+                      foreground: root.dim
+                      hoverColor: Color.accent
+                      fontFamily: root.fontFamily
+                      Layout.alignment: Qt.AlignVCenter
+                      onClicked: vpn.addOnlineNode(onlineRow.node, false)
+                    }
+
+                    PanelActionButton {
+                      visible: onlineRow.alreadySaved
+                      enabled: false
+                      iconText: "✓"
+                      tooltipText: "Already saved in local nodes"
+                      foreground: root.dim
+                      hoverColor: root.dim
+                      fontFamily: root.fontFamily
+                      Layout.alignment: Qt.AlignVCenter
+                    }
+                  }
+                }
+              }
+            }
           }
 
         }
@@ -752,12 +1176,13 @@ Panel {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        height: footerColumn.implicitHeight
+        height: Math.max(footerColumn.implicitHeight, Style.space(42))
         z: 10
 
         Column {
           id: footerColumn
-          width: parent.width
+          anchors.left: parent.left
+          anchors.right: parent.right
           spacing: Style.space(8)
 
           PanelSeparator {
@@ -765,22 +1190,228 @@ Panel {
             foreground: root.foreground
           }
 
-          Button {
-            id: importButton
+          Row {
+            id: footerButtonsRow
             width: parent.width
-            text: vpn.importing ? "正在导入..." : "导入.VPN文件"
-            iconText: vpn.importing ? "󰑐" : "󰇚"
-            iconSpinning: vpn.importing
-            bordered: true
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            fontSize: Style.font.bodySmall
-            verticalPadding: Style.space(6)
-            enabled: !vpn.busy && !vpn.importing && vpn.serviceAvailable
-            tooltipText: "选择并导入 .vpn 节点配置文件 (支持多选)"
-            onClicked: {
-              root.close()
-              vpn.openImportDialog()
+            spacing: Style.space(8)
+
+            Button {
+              id: selectNodeButton
+              width: Math.floor((parent.width - footerButtonsRow.spacing) / 2)
+              height: Style.space(32)
+              text: root.showOnlineNodes ? "Saved Nodes" : "Select Node"
+              iconText: root.showOnlineNodes ? "󰋜" : "󰒍"
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              verticalPadding: Style.space(6)
+              enabled: !vpn.busy && vpn.serviceAvailable
+              tooltipText: root.showOnlineNodes ? "Switch to saved local nodes" : "Browse online VPN Gate nodes"
+              onClicked: {
+                root.showOnlineNodes = !root.showOnlineNodes
+                if (root.showOnlineNodes && vpn.onlineNodes.length === 0 && !vpn.fetchingOnline) {
+                  vpn.fetchOnlineNodes()
+                }
+              }
+            }
+
+            Button {
+              id: importButton
+              width: parent.width - selectNodeButton.width - footerButtonsRow.spacing
+              height: Style.space(32)
+              text: vpn.importing ? "Importing..." : "Import .vpn"
+              iconText: vpn.importing ? "󰑐" : "󰇚"
+              iconSpinning: vpn.importing
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              verticalPadding: Style.space(6)
+              enabled: !vpn.busy && !vpn.importing && vpn.serviceAvailable
+              tooltipText: "Select and import .vpn profile files (multi-selection supported)"
+              onClicked: {
+                root.close()
+                vpn.openImportDialog()
+              }
+            }
+          }
+        }
+      }
+
+      MouseArea {
+        id: countryDropdownDismiss
+        visible: root.countryPopupOpen && root.showOnlineNodes
+        anchors.fill: parent
+        z: 90
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        onClicked: root.countryPopupOpen = false
+      }
+
+      BorderSurface {
+        id: countryDropdown
+        visible: root.countryPopupOpen && root.showOnlineNodes
+        z: 100
+        anchors.top: headerColumn.bottom
+        anchors.topMargin: Style.space(2)
+        anchors.left: parent.left
+        width: Math.min(parent.width, Style.space(260))
+        height: Math.min(dropdownColumn.implicitHeight + Style.space(16), Style.space(280))
+        color: root.bar ? root.bar.background : Color.background
+        borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
+        radius: Style.cornerRadius
+        padding: Style.space(6)
+        clip: true
+
+        Flickable {
+          id: dropdownFlickable
+          anchors.fill: parent
+          contentWidth: width
+          contentHeight: dropdownColumn.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          Column {
+            id: dropdownColumn
+            width: dropdownFlickable.width
+            spacing: Style.space(2)
+
+            CursorSurface {
+              width: parent.width
+              height: Style.space(30)
+              radius: Style.cornerRadius / 2
+              current: root.selectedOnlineCountry === ""
+              foreground: root.foreground
+
+              RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: Style.space(8)
+                anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+
+                Text {
+                  text: "🌐"
+                  font.pixelSize: Style.font.body
+                  Layout.alignment: Qt.AlignVCenter
+                }
+
+                Text {
+                  text: "All Countries"
+                  color: root.selectedOnlineCountry === "" ? Color.accent : root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: root.selectedOnlineCountry === ""
+                  Layout.fillWidth: true
+                  Layout.alignment: Qt.AlignVCenter
+                  elide: Text.ElideRight
+                }
+
+                Text {
+                  text: "(" + vpn.onlineNodes.length + ")"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  Layout.alignment: Qt.AlignVCenter
+                }
+
+                Text {
+                  visible: root.selectedOnlineCountry === ""
+                  text: "✓"
+                  color: Color.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: true
+                  Layout.alignment: Qt.AlignVCenter
+                }
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.selectedOnlineCountry = ""
+                  root.selectedOnlineCountryName = "All"
+                  root.selectedOnlineCountryFlag = ""
+                  root.countryPopupOpen = false
+                }
+              }
+            }
+
+            PanelSeparator {
+              width: parent.width
+              foreground: root.foreground
+            }
+
+            Repeater {
+              model: root.countryList
+
+              CursorSurface {
+                required property var modelData
+                required property int index
+                readonly property bool isSelected: root.selectedOnlineCountry === modelData.code
+
+                width: parent.width
+                height: Style.space(30)
+                radius: Style.cornerRadius / 2
+                current: isSelected
+                foreground: root.foreground
+
+                RowLayout {
+                  anchors.fill: parent
+                  anchors.leftMargin: Style.space(8)
+                  anchors.rightMargin: Style.space(8)
+                  spacing: Style.space(8)
+
+                  Text {
+                    text: modelData.flag
+                    font.pixelSize: Style.font.body
+                    Layout.alignment: Qt.AlignVCenter
+                  }
+
+                  Text {
+                    text: modelData.name
+                    color: isSelected ? Color.accent : root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.bold: isSelected
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignVCenter
+                    elide: Text.ElideRight
+                  }
+
+                  Text {
+                    text: "(" + modelData.count + ")"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    Layout.alignment: Qt.AlignVCenter
+                  }
+
+                  Text {
+                    visible: isSelected
+                    text: "✓"
+                    color: Color.accent
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.bold: true
+                    Layout.alignment: Qt.AlignVCenter
+                  }
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    root.selectedOnlineCountry = modelData.code
+                    root.selectedOnlineCountryName = modelData.name
+                    root.selectedOnlineCountryFlag = modelData.flag
+                    root.countryPopupOpen = false
+                  }
+                }
+              }
             }
           }
         }
@@ -789,7 +1420,7 @@ Panel {
     Local.ConfirmDialog {
         id: confirmDialog
         anchors.fill: parent
-        z: 20
+        z: 120
         opened: false
         message: root.confirmMessage
         confirmText: root.confirmButtonText
@@ -812,6 +1443,10 @@ Panel {
           } else if (root.pendingAction === "connect_account") {
             if (root.pendingAccount) {
               vpn.connectToAccount(root.pendingAccount.name)
+            }
+          } else if (root.pendingAction === "connect_online") {
+            if (root.pendingAccount) {
+              vpn.connectToOnlineNode(root.pendingAccount)
             }
           } else if (root.pendingAction === "delete_account") {
             if (root.pendingAccount && root.pendingAccount.name) {

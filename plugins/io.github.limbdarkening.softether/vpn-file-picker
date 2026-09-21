@@ -16,7 +16,7 @@ def test_dialog():
         gi.require_version('Gtk', '3.0')
         from gi.repository import Gtk
         dialog = Gtk.FileChooserNative.new(
-            "测试", None, Gtk.FileChooserAction.OPEN, "Open", "Cancel"
+            "Test", None, Gtk.FileChooserAction.OPEN, "Open", "Cancel"
         )
         dialog.set_select_multiple(True)
         f = Gtk.FileFilter()
@@ -42,22 +42,22 @@ def try_gtk():
     # Try Gtk.FileChooserNative first (utilizes desktop portal like xdg-desktop-portal-gtk)
     try:
         dialog = Gtk.FileChooserNative.new(
-            "选择 .VPN 文件导入",
+            "Select .vpn Files to Import",
             None,
             Gtk.FileChooserAction.OPEN,
-            "导入",
-            "取消"
+            "Import",
+            "Cancel"
         )
         dialog.set_select_multiple(True)
 
         filter_vpn = Gtk.FileFilter()
-        filter_vpn.set_name("VPN 配置文件 (*.vpn)")
+        filter_vpn.set_name("VPN Profile (*.vpn)")
         filter_vpn.add_pattern("*.vpn")
         filter_vpn.add_pattern("*.VPN")
         dialog.add_filter(filter_vpn)
 
         filter_all = Gtk.FileFilter()
-        filter_all.set_name("所有文件 (*.*)")
+        filter_all.set_name("All Files (*.*)")
         filter_all.add_pattern("*")
         dialog.add_filter(filter_all)
 
@@ -79,23 +79,23 @@ def try_gtk():
     # Fallback to standard Gtk.FileChooserDialog
     try:
         dialog = Gtk.FileChooserDialog(
-            title="选择 .VPN 文件导入",
+            title="Select .vpn Files to Import",
             action=Gtk.FileChooserAction.OPEN
         )
         dialog.add_buttons(
-            "取消", Gtk.ResponseType.CANCEL,
-            "导入", Gtk.ResponseType.OK
+            "Cancel", Gtk.ResponseType.CANCEL,
+            "Import", Gtk.ResponseType.OK
         )
         dialog.set_select_multiple(True)
 
         filter_vpn = Gtk.FileFilter()
-        filter_vpn.set_name("VPN 配置文件 (*.vpn)")
+        filter_vpn.set_name("VPN Profile (*.vpn)")
         filter_vpn.add_pattern("*.vpn")
         filter_vpn.add_pattern("*.VPN")
         dialog.add_filter(filter_vpn)
 
         filter_all = Gtk.FileFilter()
-        filter_all.set_name("所有文件 (*.*)")
+        filter_all.set_name("All Files (*.*)")
         filter_all.add_pattern("*")
         dialog.add_filter(filter_all)
 
@@ -126,10 +126,10 @@ def try_zenity():
             "--file-selection",
             "--multiple",
             "--separator=\n",
-            "--title=选择 .VPN 文件导入",
+            "--title=Select .vpn Files to Import",
             f"--filename={start_dir}/",
-            "--file-filter=VPN 配置文件 (*.vpn) | *.vpn *.VPN",
-            "--file-filter=所有文件 (*.*) | *"
+            "--file-filter=VPN Profile (*.vpn) | *.vpn *.VPN",
+            "--file-filter=All Files (*.*) | *"
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode == 0 and res.stdout.strip():

@@ -25,8 +25,17 @@ Item {
   property bool importing: pickerProcess.running || importProcess.running
   readonly property string pickerPath: Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.limbdarkening.softether/vpn-file-picker"
 
+  property var onlineNodes: []
+  property bool fetchingOnline: fetchOnlineProcess.running
+  property bool addingOnline: addOnlineProcess.running
+  property string onlineError: ""
+  property var pendingConnectNode: null
+  readonly property string vpngateHelperPath: Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.limbdarkening.softether/vpngate-helper"
+
   signal selectionRequested(string accountName)
   signal importCompleted(bool success, string message)
+  signal onlineNodesFetched(bool success, string errorMsg)
+  signal onlineNodeAdded(bool success, string accountName, string message)
 
   readonly property string configuredAccountName: boundedSetting("accountName", "", 128)
   readonly property string adapterName: boundedSetting("adapterName", "vpn_vpn", 15)
@@ -89,6 +98,10 @@ Item {
   property string _pickerOutput: ""
   property string _importOutput: ""
   property string _importError: ""
+  property string _onlineOutput: ""
+  property string _onlineError: ""
+  property string _addOnlineOutput: ""
+  property string _addOnlineError: ""
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -329,6 +342,52 @@ Item {
     importProcess.running = true
   }
 
+  function fetchOnlineNodes(force) {
+    if (fetchOnlineProcess.running) return
+    _onlineOutput = ""
+    _onlineError = ""
+    onlineError = ""
+    var args = ["timeout", "--signal=TERM", "--kill-after=3s", "15s", vpngateHelperPath, "fetch"]
+    if (force === true) args.push("--force")
+    fetchOnlineProcess.command = args
+    fetchOnlineProcess.running = true
+  }
+
+  function addOnlineNode(node, autoConnect) {
+    if (!node || !node.ip || !node.port || !node.name) return
+    if (addOnlineProcess.running) return
+    if (autoConnect === true) {
+      pendingConnectNode = node
+    } else {
+      pendingConnectNode = null
+    }
+    _addOnlineOutput = ""
+    _addOnlineError = ""
+    addOnlineProcess.command = ["timeout", "--signal=TERM", "--kill-after=3s", "10s",
+      vpngateHelperPath, "add", String(node.ip), String(node.port), String(node.name), "VPN"]
+    addOnlineProcess.running = true
+  }
+
+  function connectToOnlineNode(node) {
+    if (!node || !node.name) return
+    var targetIp = String(node.ip || "")
+    var targetName = String(node.name || "")
+    var existing = null
+    for (var i = 0; i < accounts.length; i++) {
+      var acc = accounts[i]
+      var accHost = (acc.server || "").split(":")[0].trim()
+      if (acc.name === targetName || (targetIp !== "" && accHost === targetIp)) {
+        existing = acc
+        break
+      }
+    }
+    if (existing) {
+      connectToAccount(existing.name)
+    } else {
+      addOnlineNode(node, true)
+    }
+  }
+
   Component.onCompleted: refresh()
   onSettingsChanged: {
     choosePreferredAccount()
@@ -547,15 +606,92 @@ Item {
         root.lastError = ""
         root.refreshAccounts()
         notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-i", "network-vpn",
-          "SoftEther VPN", stdout ? stdout : "成功导入 VPN 配置文件"]
+          "SoftEther VPN", stdout ? stdout : "Successfully imported VPN profile(s)"]
         notifyProcess.running = true
         root.importCompleted(true, stdout)
       } else {
-        root.lastError = root.elide(stderr || stdout || "导入 VPN 配置文件失败")
+        root.lastError = root.elide(stderr || stdout || "Failed to import VPN profile")
         notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-u", "critical",
           "SoftEther VPN", root.lastError]
         notifyProcess.running = true
         root.importCompleted(false, root.lastError)
+      }
+    }
+  }
+
+  Process {
+    id: fetchOnlineProcess
+    running: false
+    command: []
+    stdout: StdioCollector {
+      id: fetchOnlineStdout
+      waitForEnd: true
+      onStreamFinished: root._onlineOutput = text || ""
+    }
+    stderr: StdioCollector {
+      id: fetchOnlineStderr
+      waitForEnd: true
+      onStreamFinished: root._onlineError = text || ""
+    }
+    onExited: function(exitCode) {
+      var stdout = (fetchOnlineStdout.text || root._onlineOutput || "").trim()
+      var stderr = (fetchOnlineStderr.text || root._onlineError || "").trim()
+      if (exitCode === 0 && stdout.length > 0) {
+        try {
+          var parsed = JSON.parse(stdout)
+          if (Array.isArray(parsed)) {
+            root.onlineNodes = parsed
+            root.onlineError = ""
+            root.onlineNodesFetched(true, "")
+            return
+          }
+        } catch (e) {
+          root.onlineError = "Failed to parse VPN Gate data"
+        }
+      } else {
+        root.onlineError = root.elide(stderr || stdout || "Failed to fetch VPN Gate nodes")
+      }
+      root.onlineNodesFetched(false, root.onlineError)
+    }
+  }
+
+  Process {
+    id: addOnlineProcess
+    running: false
+    command: []
+    stdout: StdioCollector {
+      id: addOnlineStdout
+      waitForEnd: true
+      onStreamFinished: root._addOnlineOutput = text || ""
+    }
+    stderr: StdioCollector {
+      id: addOnlineStderr
+      waitForEnd: true
+      onStreamFinished: root._addOnlineError = text || ""
+    }
+    onExited: function(exitCode) {
+      var stdout = (addOnlineStdout.text || root._addOnlineOutput || "").trim()
+      var stderr = (addOnlineStderr.text || root._addOnlineError || "").trim()
+      var toConnect = root.pendingConnectNode
+      root.pendingConnectNode = null
+      if (exitCode === 0) {
+        root.lastError = ""
+        root.refreshAccounts()
+        notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-i", "network-vpn",
+          "SoftEther VPN", stdout ? stdout : "Saved node to local list"]
+        notifyProcess.running = true
+        if (toConnect && toConnect.name) {
+          Qt.callLater(function() {
+            root.connectToAccount(toConnect.name)
+          })
+        }
+        root.onlineNodeAdded(true, toConnect ? toConnect.name : "", stdout)
+      } else {
+        root.lastError = root.elide(stderr || stdout || "Failed to add VPN node")
+        notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-u", "critical",
+          "SoftEther VPN", root.lastError]
+        notifyProcess.running = true
+        root.onlineNodeAdded(false, toConnect ? toConnect.name : "", root.lastError)
       }
     }
   }

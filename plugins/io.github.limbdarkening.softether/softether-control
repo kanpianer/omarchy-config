@@ -534,16 +534,16 @@ case "$action" in
       fi
     done
     if ((imported_count == 0 && skipped_count > 0 && failed_count == 0)); then
-      printf '所有节点均与已有节点IP相同，已保留最早节点并跳过导入 (共 %d 个)\n' "$skipped_count"
+      printf 'All nodes match existing IPs; skipped import (%d skipped)\n' "$skipped_count"
     elif ((imported_count == 0 && failed_count > 0)); then
       fail "${last_error:-could not import VPN file}"
     else
-      printf '成功导入 %d 个 VPN 节点配置' "$imported_count"
+      printf 'Successfully imported %d VPN node profile(s)' "$imported_count"
       if ((skipped_count > 0)); then
-        printf ' (%d 个相同IP已跳过)' "$skipped_count"
+        printf ' (%d duplicate IP(s) skipped)' "$skipped_count"
       fi
       if ((failed_count > 0)); then
-        printf ' (%d 个失败)' "$failed_count"
+        printf ' (%d failed)' "$failed_count"
       fi
       printf '\n'
     fi

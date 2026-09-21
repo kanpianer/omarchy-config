@@ -234,6 +234,69 @@ function sortAccounts(accounts, order) {
   return result
 }
 
+function getCountryList(nodes) {
+  var raw = asArray(nodes)
+  var map = {}
+  var list = []
+  for (var i = 0; i < raw.length; i++) {
+    var n = raw[i]
+    if (!n || !n.countryCode) continue
+    var code = String(n.countryCode).toUpperCase()
+    if (!map[code]) {
+      map[code] = {
+        code: code,
+        name: n.country || code,
+        flag: n.flag || "🏳",
+        count: 0
+      }
+      list.push(map[code])
+    }
+    map[code].count++
+  }
+  list.sort(function(a, b) {
+    return b.count - a.count || a.name.localeCompare(b.name)
+  })
+  return list
+}
+
+function filterAndSortOnlineNodes(nodes, countryFilter, sortField, sortAsc, activeServerIp) {
+  var raw = asArray(nodes)
+  var filtered = []
+  var activeIp = String(activeServerIp || "").trim()
+
+  for (var i = 0; i < raw.length; i++) {
+    var n = raw[i]
+    if (!n) continue
+    if (countryFilter && countryFilter !== "") {
+      if (String(n.countryCode || "").toUpperCase() !== countryFilter.toUpperCase() &&
+          String(n.country || "") !== countryFilter) {
+        continue
+      }
+    }
+    filtered.push(n)
+  }
+
+  var field = sortField || "speed"
+  filtered.sort(function(a, b) {
+    var aActive = activeIp !== "" && (a.ip === activeIp || a.hostname === activeIp)
+    var bActive = activeIp !== "" && (b.ip === activeIp || b.hostname === activeIp)
+    if (aActive && !bActive) return -1
+    if (!aActive && bActive) return 1
+
+    var valA = a[field] !== undefined ? a[field] : 0
+    var valB = b[field] !== undefined ? b[field] : 0
+
+    if (valA !== valB) {
+      if (sortAsc) return valA > valB ? 1 : -1
+      else return valA < valB ? 1 : -1
+    }
+
+    return (b.speed || 0) - (a.speed || 0)
+  })
+
+  return filtered
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     decoded: decoded,
@@ -252,6 +315,8 @@ if (typeof module !== "undefined") {
     parseAddress: parseAddress,
     hasDefaultRoute: hasDefaultRoute,
     asArray: asArray,
-    sortAccounts: sortAccounts
+    sortAccounts: sortAccounts,
+    getCountryList: getCountryList,
+    filterAndSortOnlineNodes: filterAndSortOnlineNodes
   }
 }
