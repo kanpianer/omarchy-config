@@ -277,7 +277,6 @@ function getCountryList(nodes) {
 function filterAndSortOnlineNodes(nodes, countryFilter, sortField, sortAsc, activeServerIp) {
   var raw = asArray(nodes)
   var filtered = []
-  var activeIp = String(activeServerIp || "").trim()
   var filterUpper = countryFilter ? String(countryFilter).toUpperCase() : ""
 
   for (var i = 0; i < raw.length; i++) {
@@ -293,23 +292,8 @@ function filterAndSortOnlineNodes(nodes, countryFilter, sortField, sortAsc, acti
   }
 
   var field = sortField || "speed"
-  var activeNode = null
-  var rest = []
 
-  if (activeIp !== "") {
-    for (var j = 0; j < filtered.length; j++) {
-      var item = filtered[j]
-      if (!activeNode && (item.ip === activeIp || item.hostname === activeIp)) {
-        activeNode = item
-      } else {
-        rest.push(item)
-      }
-    }
-  } else {
-    rest = filtered
-  }
-
-  rest.sort(function(a, b) {
+  filtered.sort(function(a, b) {
     var valA = a[field] !== undefined ? a[field] : 0
     var valB = b[field] !== undefined ? b[field] : 0
 
@@ -321,12 +305,9 @@ function filterAndSortOnlineNodes(nodes, countryFilter, sortField, sortAsc, acti
     return (b.speed || 0) - (a.speed || 0)
   })
 
-  if (activeNode) {
-    rest.unshift(activeNode)
-  }
-
-  return rest
+  return filtered
 }
+
 
 if (typeof module !== "undefined") {
   module.exports = {

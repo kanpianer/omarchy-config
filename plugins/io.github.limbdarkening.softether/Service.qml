@@ -508,7 +508,16 @@ Item {
     directOnlineProcess.running = true
   }
 
-  Component.onCompleted: refresh()
+  property bool _ready: false
+  property bool _wasUsable: false
+
+  Component.onCompleted: {
+    refresh()
+    Qt.callLater(function() {
+      _wasUsable = usable
+      _ready = true
+    })
+  }
   onSettingsChanged: {
     choosePreferredAccount()
     if (!settingsValid) lastError = settingsError
@@ -517,7 +526,12 @@ Item {
   onUsableChanged: {
     if (usable) {
       stopConnectionTimeout()
+      if (_ready && !_wasUsable) {
+        var targetName = (connectedAccount ? displayNameForAccount(connectedAccount) : "") || nodeName || "VPN"
+        showNotification("SoftEther VPN", "Connected to " + targetName, false)
+      }
     }
+    _wasUsable = usable
   }
 
   property bool connectionTimedOut: false
@@ -559,9 +573,7 @@ Item {
 
     disconnectVpn()
 
-    notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-u", "critical",
-      "SoftEther VPN", "Connection timed out after 9 seconds"]
-    notifyProcess.running = true
+    showNotification("SoftEther VPN", lastError, true)
 
     delayedRefresh.restart()
   }
@@ -750,6 +762,9 @@ Item {
         root.lastError = stdout === null || stderr === null
           ? "SoftEther command output exceeded safe limits"
           : root.elide(stderr || stdout || "SoftEther command failed")
+        if (completedKind === "connect") {
+          root.showNotification("SoftEther VPN", root.lastError, true)
+        }
         root.refresh()
         return
       }
@@ -856,15 +871,11 @@ Item {
       if (exitCode === 0) {
         root.lastError = ""
         root.refreshAccounts()
-        notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-i", "network-vpn",
-          "SoftEther VPN", stdout ? stdout : "Successfully imported VPN profile(s)"]
-        notifyProcess.running = true
+        root.showNotification("SoftEther VPN", stdout ? stdout : "Successfully imported VPN profile(s)", false)
         root.importCompleted(true, stdout)
       } else {
         root.lastError = root.elide(stderr || stdout || "Failed to import VPN profile")
-        notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-u", "critical",
-          "SoftEther VPN", root.lastError]
-        notifyProcess.running = true
+        root.showNotification("SoftEther VPN", root.lastError, true)
         root.importCompleted(false, root.lastError)
       }
     }
@@ -926,15 +937,11 @@ Item {
       if (exitCode === 0) {
         root.lastError = ""
         root.refreshAccounts()
-        notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-i", "network-vpn",
-          "SoftEther VPN", stdout ? stdout : "Saved node to local list"]
-        notifyProcess.running = true
+        root.showNotification("SoftEther VPN", stdout ? stdout : "Saved node to local list", false)
         root.onlineNodeAdded(true, "", stdout)
       } else {
         root.lastError = root.elide(stderr || stdout || "Failed to add VPN node")
-        notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-u", "critical",
-          "SoftEther VPN", root.lastError]
-        notifyProcess.running = true
+        root.showNotification("SoftEther VPN", root.lastError, true)
         root.onlineNodeAdded(false, "", root.lastError)
       }
     }
@@ -970,17 +977,21 @@ Item {
         root.actionStatus = ""
         root.desiredState = -1
         root.lastError = root.elide(stderr || stdout || "Failed to configure direct connection")
-        notifyProcess.command = ["notify-send", "-a", "SoftEther VPN", "-u", "critical",
-          "SoftEther VPN", root.lastError]
-        notifyProcess.running = true
+        root.showNotification("SoftEther VPN", root.lastError, true)
         root.refresh()
       }
     }
   }
 
-  Process {
-    id: notifyProcess
-    running: false
-    command: []
+  function showNotification(summary, body, isError) {
+    var icon = isError ? "dialog-error" : "network-vpn"
+    Quickshell.execDetached([
+      "notify-send",
+      "-a", "SoftEther VPN",
+      "-i", icon,
+      "-t", "2000",
+      summary || "SoftEther VPN",
+      body || ""
+    ])
   }
 }

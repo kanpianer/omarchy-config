@@ -77,7 +77,7 @@ Panel {
     return (colon !== -1 ? s.substring(0, colon) : s).trim()
   }
   readonly property var filteredOnlineNodes: Model.filterAndSortOnlineNodes(
-    vpn.onlineNodes, selectedOnlineCountry, onlineSortField, onlineSortAsc, activeServerIp)
+    vpn.onlineNodes, selectedOnlineCountry, onlineSortField, onlineSortAsc)
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -172,7 +172,13 @@ Panel {
       root.selectedOnlineCountry = ""
       root.selectedOnlineCountryName = "All"
       root.selectedOnlineCountryFlag = ""
-      foundIndex = 0
+      for (var j = 0; j < root.filteredOnlineNodes.length; j++) {
+        var node = root.filteredOnlineNodes[j]
+        if (node.ip === root.activeServerIp || node.hostname === root.activeServerIp) {
+          foundIndex = j
+          break
+        }
+      }
     }
     if (foundIndex >= 0) {
       var item = onlineNodesRepeater.itemAt(foundIndex)
@@ -1029,6 +1035,13 @@ Panel {
                   property var account: modelData
                   readonly property bool selectedAccount: vpn.selectedAccountName === account.name
                   readonly property bool connectedAccount: account.statusKind === "connected" || account.statusKind === "connecting"
+                  readonly property bool isConnecting: {
+                    if (account.statusKind === "connecting") return true
+                    if (vpn.connectingAccount && vpn.connectingAccount.name === account.name) return true
+                    if (vpn.busy && vpn.actionKind === "connect" && vpn.actionAccountName === account.name) return true
+                    if (vpn.state === "connecting" && vpn.activeAccount && vpn.activeAccount.name === account.name) return true
+                    return false
+                  }
                   readonly property bool isDragging: root.dragActive && root.dragSourceIndex === index
                   property bool actionsHovered: false
                   readonly property bool rowHovered: (rowMouse.containsMouse || actionsHovered) && !root.dragActive
@@ -1036,7 +1049,7 @@ Panel {
                   width: parent.width
                   implicitHeight: rowContent.implicitHeight + Style.spacing.rowPaddingX
                   hasCursor: (rowHovered && !selectedAccount) || (root.cursorActive && root.accountIndex === index) || isDragging
-                  current: selectedAccount || isDragging
+                  current: selectedAccount || isDragging || isConnecting
                   foreground: root.foreground
                   z: isDragging ? 100 : 1
                   scale: isDragging ? 1.02 : 1.0
@@ -1135,12 +1148,39 @@ Panel {
                     spacing: Style.space(8)
 
                     Rectangle {
+                      id: accountStatusDot
                       width: Style.space(7)
                       height: width
                       radius: width / 2
-                      color: accountRow.connectedAccount ? root.foreground : root.dim
-                      opacity: accountRow.connectedAccount ? 1.0 : 0.35
+                      color: (accountRow.connectedAccount || accountRow.isConnecting) ? root.foreground : root.dim
+                      opacity: accountRow.isConnecting ? accountBreatheAnim.breatheOpacity : (accountRow.connectedAccount ? 1.0 : 0.35)
+                      scale: accountRow.isConnecting ? accountBreatheAnim.breatheScale : 1.0
                       Layout.alignment: Qt.AlignVCenter
+
+                      Item {
+                        id: accountBreatheAnim
+                        property real breatheOpacity: 1.0
+                        property real breatheScale: 1.0
+
+                        SequentialAnimation {
+                          running: accountRow.isConnecting
+                          loops: Animation.Infinite
+                          onRunningChanged: {
+                            if (!running) {
+                              accountBreatheAnim.breatheOpacity = 1.0
+                              accountBreatheAnim.breatheScale = 1.0
+                            }
+                          }
+                          ParallelAnimation {
+                            NumberAnimation { target: accountBreatheAnim; property: "breatheOpacity"; from: 1.0; to: 0.25; duration: 650; easing.type: Easing.InOutSine }
+                            NumberAnimation { target: accountBreatheAnim; property: "breatheScale"; from: 1.0; to: 1.35; duration: 650; easing.type: Easing.InOutSine }
+                          }
+                          ParallelAnimation {
+                            NumberAnimation { target: accountBreatheAnim; property: "breatheOpacity"; from: 0.25; to: 1.0; duration: 650; easing.type: Easing.InOutSine }
+                            NumberAnimation { target: accountBreatheAnim; property: "breatheScale"; from: 1.35; to: 1.0; duration: 650; easing.type: Easing.InOutSine }
+                          }
+                        }
+                      }
                     }
 
                     ColumnLayout {
@@ -1276,6 +1316,14 @@ Panel {
                   required property int index
                   property var node: modelData
                   readonly property bool isNodeActive: root.activeServerIp !== "" && (node.ip === root.activeServerIp || node.hostname === root.activeServerIp)
+                  readonly property bool isThisNode: (root.activeServerIp !== "" && (node.ip === root.activeServerIp || node.hostname === root.activeServerIp))
+                    || (vpn.directConnectedNode && (vpn.directConnectedNode.ip === node.ip || (node.hostname && vpn.directConnectedNode.hostname === node.hostname)))
+                  readonly property bool isConnecting: isThisNode && (
+                    vpn.state === "connecting"
+                    || (vpn.busy && vpn.actionKind === "connect")
+                    || vpn.connectingAccount !== null
+                    || (vpn.desiredState === 1 && !root.isVpnConnected)
+                  )
                   readonly property bool alreadySaved: root.savedIpsMap[node.ip] === true
                   property bool actionHovered: false
                   readonly property bool onlineHovered: onlineMouse.containsMouse || actionHovered
@@ -1283,8 +1331,8 @@ Panel {
                   width: parent.width
                   implicitHeight: onlineRowContent.implicitHeight + Style.spacing.rowPaddingX
                   foreground: root.foreground
-                  hasCursor: onlineHovered && !isNodeActive
-                  current: isNodeActive
+                  hasCursor: onlineHovered && !isNodeActive && !isConnecting
+                  current: isNodeActive || isConnecting
 
                   MouseArea {
                     id: onlineMouse
@@ -1304,12 +1352,39 @@ Panel {
                     spacing: Style.space(8)
 
                     Rectangle {
+                      id: onlineStatusDot
                       width: Style.space(7)
                       height: width
                       radius: width / 2
-                      color: onlineRow.isNodeActive ? root.foreground : root.dim
-                      opacity: onlineRow.isNodeActive ? 1.0 : 0.35
+                      color: (onlineRow.isNodeActive || onlineRow.isConnecting) ? root.foreground : root.dim
+                      opacity: onlineRow.isConnecting ? onlineBreatheAnim.breatheOpacity : (onlineRow.isNodeActive ? 1.0 : 0.35)
+                      scale: onlineRow.isConnecting ? onlineBreatheAnim.breatheScale : 1.0
                       Layout.alignment: Qt.AlignVCenter
+
+                      Item {
+                        id: onlineBreatheAnim
+                        property real breatheOpacity: 1.0
+                        property real breatheScale: 1.0
+
+                        SequentialAnimation {
+                          running: onlineRow.isConnecting
+                          loops: Animation.Infinite
+                          onRunningChanged: {
+                            if (!running) {
+                              onlineBreatheAnim.breatheOpacity = 1.0
+                              onlineBreatheAnim.breatheScale = 1.0
+                            }
+                          }
+                          ParallelAnimation {
+                            NumberAnimation { target: onlineBreatheAnim; property: "breatheOpacity"; from: 1.0; to: 0.25; duration: 650; easing.type: Easing.InOutSine }
+                            NumberAnimation { target: onlineBreatheAnim; property: "breatheScale"; from: 1.0; to: 1.35; duration: 650; easing.type: Easing.InOutSine }
+                          }
+                          ParallelAnimation {
+                            NumberAnimation { target: onlineBreatheAnim; property: "breatheOpacity"; from: 0.25; to: 1.0; duration: 650; easing.type: Easing.InOutSine }
+                            NumberAnimation { target: onlineBreatheAnim; property: "breatheScale"; from: 1.35; to: 1.0; duration: 650; easing.type: Easing.InOutSine }
+                          }
+                        }
+                      }
                     }
 
                     ColumnLayout {
@@ -1323,7 +1398,7 @@ Panel {
                         color: root.foreground
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.body
-                        font.bold: onlineRow.isNodeActive
+                        font.bold: onlineRow.isNodeActive || onlineRow.isConnecting
                         elide: Text.ElideRight
                       }
 

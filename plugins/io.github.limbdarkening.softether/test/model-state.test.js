@@ -175,12 +175,12 @@ assert.equal(jpOnly.length, 2)
 assert.equal(jpOnly[0].ip, "1.1.1.1") // 500 > 200
 assert.equal(jpOnly[1].ip, "3.3.3.3")
 
-// Test filterAndSortOnlineNodes: Active node pinned to top
-const activePinned = model.filterAndSortOnlineNodes(sampleOnlineNodes, "", "speed", false, "3.3.3.3")
-assert.equal(activePinned.length, 3)
-assert.equal(activePinned[0].ip, "3.3.3.3") // Active node pinned to index 0 even though speed is lowest
-assert.equal(activePinned[1].ip, "2.2.2.2") // Then sorted by speed
-assert.equal(activePinned[2].ip, "1.1.1.1")
+// Test filterAndSortOnlineNodes: Active/connecting node is not pinned to top, keeps original position
+const activeNotPinned = model.filterAndSortOnlineNodes(sampleOnlineNodes, "", "speed", false, "3.3.3.3")
+assert.equal(activeNotPinned.length, 3)
+assert.equal(activeNotPinned[0].ip, "2.2.2.2") // speed 800
+assert.equal(activeNotPinned[1].ip, "1.1.1.1") // speed 500
+assert.equal(activeNotPinned[2].ip, "3.3.3.3") // speed 200 (retains sorted position)
 
 // Test filterAndSortOnlineNodes: Sessions sort (descending)
 const bySessions = model.filterAndSortOnlineNodes(sampleOnlineNodes, "", "sessions", false, "")
