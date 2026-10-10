@@ -20,6 +20,7 @@ MICROPHONES = [
 ]
 LOGGED_IN_MODES = {
     "microphone-gate",
+    "trigger-settings",
     "voice-test",
     "microphone-change",
     "shortcut-capture",
@@ -235,13 +236,18 @@ def build_onboarding_fixture(mode):
         )
 
     def apply_asr_provider(provider):
+        provider_names = {
+            "doubao": "Doubao",
+            "volcengine": "Volcengine",
+            "deepgram": "Deepgram Nova-3 (English)",
+        }
         summary.update(
             asr_provider=provider,
-            asr_provider_name=("Volcengine" if provider == "volcengine" else "Doubao"),
+            asr_provider_name=provider_names[provider],
         )
         state.login_status = (
             LoginStatus.LOGGED_IN
-            if provider == "volcengine" and holder["asr_key"]
+            if provider != "doubao" and holder["asr_key"]
             else LoginStatus.NOT_LOGGED_IN
         )
         GLib.idle_add(refresh)
@@ -297,6 +303,10 @@ def build_onboarding_fixture(mode):
     )
     holder["control"] = control
     control.show()
+    if mode in {"trigger-settings", "shortcut-capture"}:
+        control._set_page("trigger", forward=True)
+    elif mode == "voice-test":
+        control._set_page("voice", forward=True)
 
     def cleanup():
         cancel_key_capture()

@@ -51,7 +51,7 @@
         },
         {
           "id": "io.github.limbdarkening.softether",
-          "accountName": "#US tmj 38.71.123.196",
+          "accountName": "#US TT 23.93.5.4",
           "accountOrder": [
             "#JP EN SoftBank 4%",
             "#JP EN SoftBank 3%",
@@ -71,13 +71,13 @@
             "#US Frankfort 10% tz",
             "#CA Rogers 99.247.99.250",
             "#CA Shaw 184.68.30.116",
+            "#UA 45.14.24.203",
             "#JP 1111111111111111111111111",
             "#JP WZ JCOM 125.8.169.194 %66 B",
             "#JP 60.155.233.108 %75",
             "#JP Sony 223.134.156.41 %65",
             "#JP EN JCOM 0%",
-            "#JP WZ 123.1.19.33 B",
-            "#US #tmj West Central 216.189.136.50"
+            "#JP WZ 123.1.19.33 B"
           ],
           "adapterName": "vpn_vpn",
           "networkProfileName": "SoftEther VPN Network",
