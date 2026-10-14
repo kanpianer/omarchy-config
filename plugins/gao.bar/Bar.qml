@@ -55,13 +55,7 @@ Item {
   readonly property var fallbackActiveBorderSpec: Border.hyprlandActiveSpec(Color.notifications.border, root.hyprBorderSize)
   readonly property var fallbackInactiveBorderSpec: Border.flat(Color.border || "#1e1e1e", root.hyprBorderSize)
 
-  readonly property var effectiveBarBorderSpec: {
-    if (root.barFocused) {
-      return root.hyprActiveBorderSpec || root.fallbackActiveBorderSpec
-    } else {
-      return root.hyprInactiveBorderSpec || root.fallbackInactiveBorderSpec
-    }
-  }
+  readonly property var effectiveBarBorderSpec: root.hyprInactiveBorderSpec || root.fallbackInactiveBorderSpec
 
   // Inner horizontal margin matching the vertical margin from icon to bar edges,
   // clamped to effectiveCornerRadius so rounded corners don't clip end modules:
@@ -1389,13 +1383,7 @@ Item {
     property bool surfaceHovered: false
     readonly property bool barFocused: surfaceHovered || (root.activePopout !== null && root.targetBelongsToWindow(root.activePopout, barWindow)) || (root.barDragWindow === barWindow) || (root.barMoveWindow === barWindow)
 
-    readonly property var effectiveBarBorderSpec: {
-      if (barWindow.barFocused) {
-        return root.hyprActiveBorderSpec || root.fallbackActiveBorderSpec
-      } else {
-        return root.hyprInactiveBorderSpec || root.fallbackInactiveBorderSpec
-      }
-    }
+    readonly property var effectiveBarBorderSpec: root.hyprInactiveBorderSpec || root.fallbackInactiveBorderSpec
 
     BorderSurface {
       id: barSurface
