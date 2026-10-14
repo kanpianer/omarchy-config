@@ -1010,7 +1010,8 @@ Item {
     // textures — which measures ~150ms against ~20ms to tear down. Parking
     // keeps the surface alive, so showing is only a margin change.
     visible: !remapGuard.remapping
-    exclusionMode: root.barHidden ? ExclusionMode.Ignore : ExclusionMode.Auto
+    exclusionMode: root.barHidden ? ExclusionMode.Ignore : ExclusionMode.Normal
+    exclusiveZone: root.barHidden ? 0 : root.barSize
 
     ScreenMoveRemap {
       id: remapGuard
@@ -1031,8 +1032,8 @@ Item {
       right: root.position === "right" || !root.vertical
     }
 
-    implicitWidth: root.vertical ? root.barSize : 0
-    implicitHeight: root.vertical ? 0 : root.barSize
+    implicitWidth: root.vertical ? (root.barSize + 1) : 0
+    implicitHeight: root.vertical ? 0 : (root.barSize + 1)
     color: root.transparent ? "transparent" : root.background
     surfaceFormat.opaque: false
     WlrLayershell.namespace: "omarchy-bar"
