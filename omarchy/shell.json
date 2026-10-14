@@ -51,7 +51,7 @@
         },
         {
           "id": "io.github.limbdarkening.softether",
-          "accountName": "#US Charter inm",
+          "accountName": "#US TT 23.93.5.4",
           "accountOrder": [
             "#JP EN SoftBank 4%",
             "#JP EN SoftBank 3%",
@@ -110,8 +110,8 @@
     },
     "position": "top",
     "transparent": false,
-    "edgeMargin": -5,
-    "id": "gao.bar"
+    "id": "gao.bar",
+    "autoHide": true
   },
   "idle": {
     "lock": 300,

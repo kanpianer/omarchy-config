@@ -30,6 +30,247 @@ Item {
   // killing the entire shell. Hidden panels stay mapped but park off-screen
   // without an exclusion zone; updated by the FileView watcher further down.
   property bool barHidden: false
+  // Auto-hide configuration and state:
+  property bool autoHide: (barConfig && barConfig.autoHide !== undefined) ? (barConfig.autoHide === true) : true
+  property bool edgeTriggered: false
+  readonly property bool barEffectiveRevealed: !autoHide || barHovered || edgeTriggered || activePopout !== null || barDragSource !== null || barMoveActive
+
+  // Window gap, rounding and border detection from Hyprland:
+  property int hyprGapsOut: 0
+  property int hyprGapsOutTop: 0
+  property int hyprGapsOutSide: 0
+  property int hyprRounding: Style.cornerRadius
+  property int hyprBorderSize: 2
+  property var hyprActiveBorderSpec: null
+  property var hyprInactiveBorderSpec: null
+
+  readonly property bool windowHasGap: root.hyprGapsOut > 0
+  readonly property bool windowHasRounding: root.hyprRounding > 0
+  readonly property int effectiveCornerRadius: 0
+  readonly property int effectiveTopGap: 0
+  readonly property int effectiveSideGap: 0
+
+  readonly property bool barFocused: barHovered || activePopout !== null || barDragSource !== null || barMoveActive
+
+  readonly property var fallbackActiveBorderSpec: Border.hyprlandActiveSpec(Color.notifications.border, root.hyprBorderSize)
+  readonly property var fallbackInactiveBorderSpec: Border.flat(Color.border || "#1e1e1e", root.hyprBorderSize)
+
+  readonly property var effectiveBarBorderSpec: {
+    if (root.barFocused) {
+      return root.hyprActiveBorderSpec || root.fallbackActiveBorderSpec
+    } else {
+      return root.hyprInactiveBorderSpec || root.fallbackInactiveBorderSpec
+    }
+  }
+
+  // Inner horizontal margin matching the vertical margin from icon to bar edges,
+  // clamped to effectiveCornerRadius so rounded corners don't clip end modules:
+  readonly property int barInnerPadding: Math.max(3, Math.max(root.effectiveCornerRadius, Math.round((root.barSize - Style.bar.iconCanvas) / 2)))
+
+  function hyprGradientToBorderSpec(gradientStr, borderWidth) {
+    var s = String(gradientStr || "").trim()
+    if (!s) return null
+    var parts = s.split(/\s+/)
+    var colors = []
+    var angle = 0
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i]
+      if (p.match(/^-?\d+(?:\.\d+)?deg$/)) {
+        angle = Number(p.replace(/deg$/, ""))
+      } else if (p.match(/^[0-9A-Fa-f]{8}$/)) {
+        // Hyprland uses AARRGGBB hex (e.g. ee798186).
+        // Qt / QML 8-digit hex strings are ALSO #AARRGGBB.
+        colors.push("#" + p)
+      } else if (p.match(/^[0-9A-Fa-f]{6}$/)) {
+        colors.push("#" + p)
+      } else {
+        colors.push(p)
+      }
+    }
+    var w = (borderWidth !== undefined && borderWidth !== null && borderWidth > 0) ? borderWidth : 2
+    var widths = { top: w, right: w, bottom: w, left: w }
+    var color = colors.length > 0 ? colors[0] : "transparent"
+    var gradient = {
+      colors: colors,
+      angle: angle,
+      enabled: colors.length > 1
+    }
+    return { color: color, widths: widths, gradient: gradient }
+  }
+
+  function parseGapsOut(raw) {
+    try {
+      var json = JSON.parse(raw || "{}")
+      var css = String(json.css || "").trim()
+      var parts = css.match(/-?\d+(?:\.\d+)?/g) || []
+      if (parts.length === 1) {
+        var v = Math.max(0, Math.round(Number(parts[0])))
+        return { top: v, right: v, bottom: v, left: v, any: v > 0 }
+      } else if (parts.length === 2) {
+        var tb = Math.max(0, Math.round(Number(parts[0])))
+        var lr = Math.max(0, Math.round(Number(parts[1])))
+        return { top: tb, right: lr, bottom: tb, left: lr, any: (tb > 0 || lr > 0) }
+      } else if (parts.length >= 4) {
+        var t = Math.max(0, Math.round(Number(parts[0])))
+        var r = Math.max(0, Math.round(Number(parts[1])))
+        var b = Math.max(0, Math.round(Number(parts[2])))
+        var l = Math.max(0, Math.round(Number(parts[3])))
+        return { top: t, right: r, bottom: b, left: l, any: (t > 0 || r > 0 || b > 0 || l > 0) }
+      }
+      var intVal = Number(json.int)
+      if (isFinite(intVal) && intVal > 0) {
+        return { top: intVal, right: intVal, bottom: intVal, left: intVal, any: true }
+      }
+    } catch (e) {}
+    return { top: 0, right: 0, bottom: 0, left: 0, any: false }
+  }
+
+  function parseRounding(raw) {
+    try {
+      var json = JSON.parse(raw || "{}")
+      var n = Number(json.int)
+      if (isFinite(n) && n >= 0) return Math.round(n)
+    } catch (e) {}
+    return Style.cornerRadius
+  }
+
+  function parseBatchOptions(text) {
+    if (!text) return
+    var chunks = text.split(/\n\s*\n/)
+    for (var i = 0; i < chunks.length; i++) {
+      var chunk = chunks[i].trim()
+      if (!chunk) continue
+      try {
+        var json = JSON.parse(chunk)
+        var opt = String(json.option || "")
+        if (opt === "general:col.active_border") {
+          var actGrad = String(json.gradient || "").trim()
+          if (actGrad) root.hyprActiveBorderSpec = root.hyprGradientToBorderSpec(actGrad, root.hyprBorderSize)
+        } else if (opt === "general:col.inactive_border") {
+          var inactGrad = String(json.gradient || "").trim()
+          if (inactGrad) root.hyprInactiveBorderSpec = root.hyprGradientToBorderSpec(inactGrad, root.hyprBorderSize)
+        } else if (opt === "general:border_size") {
+          var bs = Number(json.int)
+          if (isFinite(bs) && bs >= 0) root.hyprBorderSize = Math.round(bs)
+        } else if (opt === "general:gaps_out") {
+          var res = root.parseGapsOut(chunk)
+          root.hyprGapsOutTop = res.top
+          root.hyprGapsOutSide = res.left
+          root.hyprGapsOut = (res.top > 0 || res.left > 0 || res.right > 0 || res.bottom > 0) ? Math.max(res.top, res.left) : 0
+        } else if (opt === "decoration:rounding") {
+          root.hyprRounding = root.parseRounding(chunk)
+        }
+      } catch (e) {}
+    }
+  }
+
+  function refreshHyprlandOptions() {
+    if (Style && typeof Style.refresh === "function") {
+      Style.refresh()
+    }
+    hyprOptionsProcess.running = false
+    hyprOptionsProcess.running = true
+  }
+
+  Process {
+    id: hyprOptionsProcess
+    command: ["hyprctl", "--batch", "j/getoption general:col.active_border ; j/getoption general:col.inactive_border ; j/getoption general:border_size ; j/getoption general:gaps_out ; j/getoption decoration:rounding"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.parseBatchOptions(text)
+    }
+  }
+
+  Timer {
+    id: hyprlandPollTimer
+    interval: 1000
+    repeat: true
+    running: true
+    triggeredOnStart: true
+    onTriggered: root.refreshHyprlandOptions()
+  }
+
+  FileView {
+    id: hyprLooknfeelWatch
+    path: root.home + "/.config/hypr/looknfeel.lua"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: root.refreshHyprlandOptions()
+  }
+
+  FileView {
+    id: hyprlandLuaWatch
+    path: root.home + "/.config/hypr/hyprland.lua"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: root.refreshHyprlandOptions()
+  }
+
+  FileView {
+    id: hyprNoGapsWatch
+    path: root.home + "/.local/state/omarchy/toggles/hypr/window-no-gaps.lua"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: root.refreshHyprlandOptions()
+    onLoaded: root.refreshHyprlandOptions()
+  }
+
+  Connections {
+    target: Style
+    function onCornerRadiusChanged() { root.refreshHyprlandOptions() }
+    function onGapsOutChanged() { root.refreshHyprlandOptions() }
+  }
+
+  Timer {
+    id: hideDelayTimer
+    interval: 400
+    repeat: false
+    onTriggered: {
+      root.edgeTriggered = false
+    }
+  }
+
+  Timer {
+    id: edgeGraceTimer
+    interval: 1500
+    repeat: false
+    onTriggered: {
+      if (!root.barHovered && root.activePopout === null && !root.barDragSource && !root.barMoveActive) {
+        root.edgeTriggered = false
+      }
+    }
+  }
+
+  function requestBarReveal() {
+    if (!root.autoHide || root.barHidden) return
+    hideDelayTimer.stop()
+    edgeGraceTimer.restart()
+    root.edgeTriggered = true
+  }
+
+  function handleEdgeTriggered() {
+    requestBarReveal()
+  }
+
+  function toggleBarPinned() {
+    var nextAutoHide = !root.autoHide
+    root.autoHide = nextAutoHide
+    if (!nextAutoHide) {
+      hideDelayTimer.stop()
+      edgeGraceTimer.stop()
+      edgeTriggered = false
+    } else {
+      if (!root.barHovered && root.activePopout === null) {
+        hideDelayTimer.restart()
+      }
+    }
+    if (root.shell && typeof root.shell.mutateShellConfig === "function") {
+      root.shell.mutateShellConfig(function(config) {
+        if (!Util.isPlainObject(config.bar)) config.bar = {}
+        config.bar.autoHide = nextAutoHide
+      })
+    }
+  }
   property string home: Quickshell.env("HOME")
   property string stateHome: home + "/.local/state"
   property string omarchyConfigDir: home + "/.config/omarchy"
@@ -81,6 +322,11 @@ Item {
   property bool tooltipShown: false
   property int tooltipRequest: 0
   property var activePopout: null
+  onActivePopoutChanged: {
+    if (activePopout === null && root.autoHide && !root.barHovered) {
+      hideDelayTimer.restart()
+    }
+  }
   property var barDragSource: null
   property var barDragTarget: null
   property var barDragTargetGeometry: null
@@ -358,6 +604,9 @@ Item {
     position = normalizePosition(config.position)
     setRequestedTransparency(config.transparent === true)
     centerAnchor = Util.canonicalWidgetId(config.centerAnchor || "")
+    if (config.autoHide !== undefined) {
+      root.autoHide = config.autoHide === true
+    }
 
     // layoutEntries feeds plain JS arrays to the module Repeaters, and QML
     // cannot diff those: reassigning layoutConfig rebuilds every widget on
@@ -579,7 +828,10 @@ Item {
     return source ? Util.fileUrl(source) : ""
   }
 
-  Component.onCompleted: applyBarConfig()
+  Component.onCompleted: {
+    applyBarConfig()
+    refreshHyprlandOptions()
+  }
 
   // Revealing the indicators widens their section, which can slide a neighbour
   // under a stationary pointer. Collapsing on that un-hover would move it back
@@ -595,8 +847,18 @@ Item {
   }
 
   function setBarHovered(hovered) {
-    barHoverCount = Math.max(0, barHoverCount + (hovered ? 1 : -1))
-    if (barHoverCount === 0) centerSectionRevealTimer.restart()
+    if (hovered) {
+      barHoverCount = 1
+      hideDelayTimer.stop()
+      edgeGraceTimer.stop()
+      edgeTriggered = true
+    } else {
+      barHoverCount = 0
+      centerSectionRevealTimer.restart()
+      if (root.autoHide && root.activePopout === null && !root.barDragSource && !root.barMoveActive) {
+        hideDelayTimer.restart()
+      }
+    }
   }
 
   Timer {
@@ -979,6 +1241,18 @@ Item {
     model: Quickshell.screens
 
     delegate: Component {
+      EdgeTriggerPanel {
+        required property var modelData
+
+        screen: modelData
+      }
+    }
+  }
+
+  Variants {
+    model: Quickshell.screens
+
+    delegate: Component {
       DragGhostPanel {
         required property var modelData
 
@@ -1001,28 +1275,101 @@ Item {
     }
   }
 
+  component EdgeTriggerPanel: PanelWindow {
+    id: triggerWindow
+    required property var screen
+
+    visible: root.autoHide && !root.barHidden
+    screen: triggerWindow.screen
+    exclusionMode: ExclusionMode.Ignore
+    exclusiveZone: 0
+    WlrLayershell.namespace: "omarchy-bar-trigger"
+    WlrLayershell.layer: WlrLayer.Overlay
+
+    anchors {
+      top: root.position === "top"
+      bottom: root.position === "bottom"
+      left: root.position === "left" || !root.vertical
+      right: root.position === "right" || !root.vertical
+    }
+
+    implicitHeight: root.vertical ? 0 : 4
+    implicitWidth: root.vertical ? 4 : 0
+    color: "transparent"
+
+    mask: Region {
+      item: root.barEffectiveRevealed ? null : triggerArea
+    }
+
+    Item {
+      id: triggerArea
+      anchors.fill: parent
+
+      MouseArea {
+        anchors.fill: parent
+        hoverEnabled: true
+        acceptedButtons: Qt.NoButton
+        onEntered: root.requestBarReveal()
+        onPositionChanged: root.requestBarReveal()
+      }
+
+      HoverHandler {
+        onHoveredChanged: if (hovered) root.requestBarReveal()
+      }
+    }
+  }
+
   component BarPanel: PanelWindow {
     id: barWindow
 
-    // Hiding parks the bar just past its screen edge instead of unmapping it.
-    // Unmapping frees the layer surface and the whole scene graph, so every
-    // reveal has to rebuild them — new surface, re-shaped glyphs, re-uploaded
-    // textures — which measures ~150ms against ~20ms to tear down. Parking
-    // keeps the surface alive, so showing is only a margin change.
+    readonly property real floatingTopGap: root.effectiveTopGap
+    readonly property real floatingSideGap: root.effectiveSideGap
+    readonly property real hideOffset: -(root.barSize + root.effectiveTopGap + 2)
+
     visible: !remapGuard.remapping
-    exclusionMode: root.barHidden ? ExclusionMode.Ignore : ExclusionMode.Normal
-    exclusiveZone: root.barHidden ? 0 : root.barSize
+    exclusionMode: (root.autoHide || root.barHidden) ? ExclusionMode.Ignore : ExclusionMode.Normal
+    exclusiveZone: (root.autoHide || root.barHidden) ? 0 : Math.max(0, Math.round(root.barSize - root.effectiveTopGap - root.hyprBorderSize))
 
     ScreenMoveRemap {
       id: remapGuard
       window: barWindow
     }
 
+    property real targetTopMargin: {
+      if (root.barHidden) return barWindow.hideOffset
+      if (root.position !== "top") return 0
+      return root.barEffectiveRevealed ? barWindow.floatingTopGap : barWindow.hideOffset
+    }
+    property real targetBottomMargin: {
+      if (root.barHidden) return barWindow.hideOffset
+      if (root.position !== "bottom") return 0
+      return root.barEffectiveRevealed ? barWindow.floatingTopGap : barWindow.hideOffset
+    }
+    property real targetLeftMargin: {
+      if (root.barHidden) return barWindow.hideOffset
+      if (root.position !== "left") return 0
+      return root.barEffectiveRevealed ? barWindow.floatingSideGap : barWindow.hideOffset
+    }
+    property real targetRightMargin: {
+      if (root.barHidden) return barWindow.hideOffset
+      if (root.position !== "right") return 0
+      return root.barEffectiveRevealed ? barWindow.floatingSideGap : barWindow.hideOffset
+    }
+
+    property real animatedTopMargin: targetTopMargin
+    Behavior on animatedTopMargin { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+    property real animatedBottomMargin: targetBottomMargin
+    Behavior on animatedBottomMargin { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+    property real animatedLeftMargin: targetLeftMargin
+    Behavior on animatedLeftMargin { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+    property real animatedRightMargin: targetRightMargin
+    Behavior on animatedRightMargin { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+
     margins {
-      top: root.barHidden && root.position === "top" ? -root.barSize : 0
-      bottom: root.barHidden && root.position === "bottom" ? -root.barSize : 0
-      left: root.barHidden && root.position === "left" ? -root.barSize : 0
-      right: root.barHidden && root.position === "right" ? -root.barSize : 0
+      top: Math.round(barWindow.animatedTopMargin)
+      bottom: Math.round(barWindow.animatedBottomMargin)
+      left: root.vertical ? Math.round(barWindow.animatedLeftMargin) : barWindow.floatingSideGap
+      right: root.vertical ? Math.round(barWindow.animatedRightMargin) : barWindow.floatingSideGap
     }
 
     anchors {
@@ -1032,25 +1379,49 @@ Item {
       right: root.position === "right" || !root.vertical
     }
 
-    implicitWidth: root.vertical ? (root.barSize + 1) : 0
-    implicitHeight: root.vertical ? 0 : (root.barSize + 1)
-    color: root.transparent ? "transparent" : root.background
+    implicitWidth: root.vertical ? root.barSize : 0
+    implicitHeight: root.vertical ? 0 : root.barSize
+    color: "transparent"
     surfaceFormat.opaque: false
     WlrLayershell.namespace: "omarchy-bar"
     WlrLayershell.layer: WlrLayer.Top
 
-    Loader {
-      anchors.fill: parent
-      sourceComponent: root.vertical ? verticalBar : horizontalBar
+    property bool surfaceHovered: false
+    readonly property bool barFocused: surfaceHovered || (root.activePopout !== null && root.targetBelongsToWindow(root.activePopout, barWindow)) || (root.barDragWindow === barWindow) || (root.barMoveWindow === barWindow)
 
-      // A child of the loader, not a sibling of the sections: an ancestor stays
-      // hovered while the pointer is over a widget, where a sibling would lose
-      // hover to the section the pointer entered.
+    readonly property var effectiveBarBorderSpec: {
+      if (barWindow.barFocused) {
+        return root.hyprActiveBorderSpec || root.fallbackActiveBorderSpec
+      } else {
+        return root.hyprInactiveBorderSpec || root.fallbackInactiveBorderSpec
+      }
+    }
+
+    BorderSurface {
+      id: barSurface
+      anchors.fill: parent
+      clip: true
+      radius: root.effectiveCornerRadius
+      Behavior on radius { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+      color: root.transparent ? "transparent" : root.background
+      borderSpec: barWindow.effectiveBarBorderSpec
+
       HoverHandler {
-        onHoveredChanged: root.setBarHovered(hovered)
-        // Unplugging a monitor destroys its bar without a leave event, which
-        // would strand this surface's tally and hold the peek open for good.
-        Component.onDestruction: if (hovered) root.setBarHovered(false)
+        id: barHoverHandler
+        cursorShape: Qt.ArrowCursor
+        onHoveredChanged: {
+          barWindow.surfaceHovered = hovered
+          root.setBarHovered(hovered)
+        }
+        Component.onDestruction: if (hovered) {
+          barWindow.surfaceHovered = false
+          root.setBarHovered(false)
+        }
+      }
+
+      Loader {
+        anchors.fill: parent
+        sourceComponent: root.vertical ? verticalBar : horizontalBar
       }
     }
 
@@ -1128,13 +1499,13 @@ Item {
 
         LeftModules {
           anchors.left: parent.left
-          anchors.leftMargin: (root.barConfig && root.barConfig.edgeMargin !== undefined) ? root.barConfig.edgeMargin : 2
+          anchors.leftMargin: (root.barConfig && root.barConfig.edgeMargin !== undefined && root.barConfig.edgeMargin > 0) ? root.barConfig.edgeMargin : root.barInnerPadding
           anchors.verticalCenter: parent.verticalCenter
         }
 
         RightModules {
           anchors.right: parent.right
-          anchors.rightMargin: (root.barConfig && root.barConfig.edgeMargin !== undefined) ? root.barConfig.edgeMargin : 2
+          anchors.rightMargin: (root.barConfig && root.barConfig.edgeMargin !== undefined && root.barConfig.edgeMargin > 0) ? root.barConfig.edgeMargin : root.barInnerPadding
           anchors.verticalCenter: parent.verticalCenter
         }
       }
@@ -1150,13 +1521,13 @@ Item {
 
         LeftModules {
           anchors.top: parent.top
-          anchors.topMargin: (root.barConfig && root.barConfig.edgeMargin !== undefined) ? root.barConfig.edgeMargin : 2
+          anchors.topMargin: (root.barConfig && root.barConfig.edgeMargin !== undefined && root.barConfig.edgeMargin > 0) ? root.barConfig.edgeMargin : root.barInnerPadding
           anchors.horizontalCenter: parent.horizontalCenter
         }
 
         RightModules {
           anchors.bottom: parent.bottom
-          anchors.bottomMargin: (root.barConfig && root.barConfig.edgeMargin !== undefined) ? root.barConfig.edgeMargin : 2
+          anchors.bottomMargin: (root.barConfig && root.barConfig.edgeMargin !== undefined && root.barConfig.edgeMargin > 0) ? root.barConfig.edgeMargin : root.barInnerPadding
           anchors.horizontalCenter: parent.horizontalCenter
         }
       }
@@ -1414,7 +1785,7 @@ Item {
     property real pressedY: 0
     readonly property real dragThreshold: Style.space(4)
 
-    acceptedButtons: Qt.LeftButton
+    acceptedButtons: Qt.LeftButton | Qt.RightButton
     cursorShape: dragging ? Qt.ClosedHandCursor : Qt.ArrowCursor
     pressAndHoldInterval: 200
 
@@ -1427,13 +1798,16 @@ Item {
     }
 
     onPressed: function(mouse) {
-      dragging = false
-      suppressClick = false
-      pressedX = mouse.x
-      pressedY = mouse.y
+      if (mouse.button === Qt.LeftButton) {
+        dragging = false
+        suppressClick = false
+        pressedX = mouse.x
+        pressedY = mouse.y
+      }
     }
 
     onPressAndHold: function(mouse) {
+      if (mouse.button !== Qt.LeftButton) return
       // A widget above us propagates its composed press-and-hold down here without
       // ever handing over the grab, so we'd get no release or cancel to end the move.
       if (!gestureArea.pressed) return
@@ -1455,11 +1829,12 @@ Item {
     }
 
     onReleased: function(mouse) {
-      if (!dragging) return
-      dragging = false
-      suppressClick = true
-      root.finishBarMove()
-      mouse.accepted = true
+      if (mouse.button === Qt.LeftButton && dragging) {
+        dragging = false
+        suppressClick = true
+        root.finishBarMove()
+        mouse.accepted = true
+      }
     }
 
     onCanceled: {
@@ -1472,6 +1847,12 @@ Item {
       if (suppressClick) {
         suppressClick = false
         mouse.accepted = true
+        return
+      }
+      if (mouse.button === Qt.RightButton) {
+        root.toggleBarPinned()
+        mouse.accepted = true
+        return
       }
     }
 
