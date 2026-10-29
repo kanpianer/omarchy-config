@@ -60,6 +60,7 @@ class ControlWindow:
         self._start_button = None
         self._update_button = None
         self._update_info = None
+        self._polish_widget = None
         app_state.connect("login-status-changed", self._refresh)
         app_state.connect("recording-state-changed", self._refresh)
         app_state.connect("error-message-changed", self._error)
@@ -77,8 +78,8 @@ class ControlWindow:
         if self._actions.is_preview_testing():
             self._actions.cancel_preview()
         flush = getattr(self, "_flush_asr_key", None)
-        if flush:
-            flush()
+        if flush and not flush():
+            return
         if self._window:
             self._window.set_visible(False)
 
@@ -98,17 +99,24 @@ class ControlWindow:
         self._refresh()
 
     def set_result(self, text, status):
+        personal = getattr(self._app, "_personal_window", None)
+        if personal:
+            personal.set_recent(text, status)
         if self._result:
             self._result.get_buffer().set_text(text)
             self._result_status.set_text(status)
 
     def set_update(self, info):
         self._update_info = info
+        if info is None:
+            if self._update_button:
+                self._update_button.set_label(tr("Check updates", "检查更新"))
+            return
         if self._update_button:
-            self._update_button.set_label(tr("Update", "更新"))
+            self._update_button.set_label(tr(f"Update {info.version}", f"更新 {info.version}"))
             self._update_button.set_tooltip_text(tr(
-                f"Doubao Say {info.version} is available. Current version: {VERSION}. Click to open the release page.",
-                f"豆包说 {info.version} 已发布，当前版本为 {VERSION}。点击打开发布页面。"))
+                f"Doubao Say {info.version} is available. Current version: {VERSION}. Click to download and restart.",
+                f"豆包说 {info.version} 已发布，当前版本为 {VERSION}。点击下载并重启。"))
             self._update_button.set_visible(True)
 
     def advance_after_login(self):
@@ -151,6 +159,7 @@ class ControlWindow:
         summary = self._actions.summary()
         provider = recognition_provider(summary.get("asr_provider", "doubao"))
         uses_api_key = provider.uses_api_key
+        self._sync_asr_controls()
         if self._page_headings:
             self._page_titles["account"] = (tr("Recognition", "语音识别")
                                             if uses_api_key else tr("Sign in", "登录"))
@@ -246,7 +255,7 @@ class ControlWindow:
         heading.set_ellipsize(Pango.EllipsizeMode.END)
         heading.set_width_chars(5)
         header.append(heading)
-        self._update_button = Gtk.Button(label=tr("Update", "更新"), visible=False)
+        self._update_button = Gtk.Button(label=tr("Check updates", "检查更新"))
         self._update_button.add_css_class("update-button")
         self._update_button.connect("clicked", self._open_update)
         header.append(self._update_button)
@@ -279,6 +288,10 @@ class ControlWindow:
         self._scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self._scroll.set_child(content)
         outer.append(self._scroll)
+        personal_button = Gtk.Button(label=tr("Vocabulary & history", "个人词汇与历史"))
+        personal_button.connect("clicked", lambda *_: self._actions.open_personal())
+        outer.append(personal_button)
+
         self._stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT,
                                 transition_duration=180)
         self._stack.connect("notify::visible-child-name", self._page_changed)
@@ -396,6 +409,7 @@ class ControlWindow:
         polish = PolishSettings(self._actions.polish_settings(),
             self._actions.polish_has_key(), self._actions.save_polish,
             self._actions.test_polish)
+        self._polish_widget = polish
         trigger.append(polish)
 
         voice = page("voice", tr("Voice test", "试说"),
@@ -430,13 +444,24 @@ class ControlWindow:
         self._page_changed()
         self._refresh()
 
+    def flush_edits(self):
+        if self._asr_key_save_source:
+            GLib.source_remove(self._asr_key_save_source)
+            self._asr_key_save_source = 0
+        if self._asr_key and self._asr_key.get_text().strip() and not self._save_asr_key_now():
+            return False
+        return not self._polish_widget or self._polish_widget.flush_edits()
+
+    def set_update_status(self, message, busy=False):
+        self.set_feedback(message)
+        if self._update_button:
+            self._update_button.set_sensitive(not busy)
+
     def _open_update(self, *_):
         if self._update_info:
-            try:
-                Gio.AppInfo.launch_default_for_uri(self._update_info.url, None)
-            except GLib.Error:
-                self.set_feedback(tr("Could not open the release page. Check your default browser.",
-                                     "无法打开发布页面，请检查默认浏览器。"))
+            self._actions.install_update(self._update_info)
+        else:
+            self._actions.check_updates()
 
     def _page_changed(self, *_):
         if self._trigger_picker and self._stack.get_visible_child_name() != "trigger":
@@ -506,8 +531,16 @@ class ControlWindow:
     def _asr_provider_changed(self, *_):
         if self._changing_asr_provider:
             return
+        if self._asr_testing:
+            self._refresh()
+            return
         selected = self._asr_provider.get_selected()
         if selected >= len(ASR_PROVIDERS):
+            return
+        # Saving can refresh the dropdown, so keep the requested selection but
+        # flush the draft while callbacks still refer to its original provider.
+        if not self._flush_asr_key():
+            self._refresh()
             return
         try:
             self._actions.apply_asr_provider(ASR_PROVIDERS[selected])
@@ -518,8 +551,20 @@ class ControlWindow:
         self.set_feedback(tr(
             "Recognition service switched. Configure its credentials below to continue.",
             "语音识别服务已切换，请在下方配置对应凭证后继续。"))
+        self._asr_status.set_text("")
+
+    def _sync_asr_controls(self):
+        if not self._asr_key:
+            return
+        has_key = self._actions.asr_has_key()
+        self._asr_key.set_placeholder_text(tr(
+            "Saved — leave blank to keep" if has_key else "Enter speech API key",
+            "已保存，留空则保持不变" if has_key else "填写语音 API Key"))
+        self._asr_test_button.set_sensitive(
+            not self._asr_testing and bool(has_key or self._asr_key.get_text().strip()))
 
     def _queue_asr_key_save(self, *_):
+        self._sync_asr_controls()
         if not self._asr_key or not self._asr_key.get_text().strip():
             return
         if self._asr_key_save_source:
@@ -533,26 +578,29 @@ class ControlWindow:
 
     def _save_asr_key_now(self):
         if not self._asr_key:
-            return self._actions.asr_has_key()
+            return True
         key = self._asr_key.get_text().strip()
         if not key:
-            return self._actions.asr_has_key()
+            return True
         try:
             self._actions.save_asr(key)
         except (ValueError, OSError) as error:
             self._asr_status.set_text(str(error))
+            self.set_feedback(str(error))
             return False
+        self._asr_key.set_text("")
         self._asr_key.set_placeholder_text(tr(
             "Saved — leave blank to keep", "已保存，留空则保持不变"))
-        self._asr_status.set_text(tr(
-            "API key saved automatically.", "API Key 已自动保存。"))
+        message = tr("API key saved automatically.", "API Key 已自动保存。")
+        self._asr_status.set_text(message)
+        self.set_feedback(message)
         return True
 
     def _flush_asr_key(self):
         if self._asr_key_save_source:
             GLib.source_remove(self._asr_key_save_source)
             self._asr_key_save_source = 0
-        self._save_asr_key_now()
+        return self._save_asr_key_now()
 
     def _test_asr_clicked(self, *_):
         if self._asr_testing:
@@ -561,10 +609,13 @@ class ControlWindow:
             GLib.source_remove(self._asr_key_save_source)
             self._asr_key_save_source = 0
         if not self._save_asr_key_now():
+            return
+        if not self._actions.asr_has_key():
             self._asr_status.set_text(tr(
                 "Enter an API key first.", "请先填写 API Key。"))
             return
         self._asr_testing = True
+        self._asr_provider.set_sensitive(False)
         self._asr_test_button.set_sensitive(False)
         self._asr_test_button.set_label(tr("Testing…", "正在测试…"))
         self._asr_status.set_text(tr(
@@ -577,11 +628,14 @@ class ControlWindow:
 
     def _asr_tested(self, result, error):
         self._asr_testing = False
+        self._asr_provider.set_sensitive(True)
         self._asr_test_button.set_sensitive(True)
         self._asr_test_button.set_label(tr("Test API key", "测试 API Key"))
-        self._asr_status.set_text(
+        message = (
             tr("Test failed: ", "测试失败：") + error if error else
             (result or tr("API key accepted.", "API Key 可用。")))
+        self._asr_status.set_text(message)
+        self.set_feedback(message)
         return GLib.SOURCE_REMOVE
 
     def _continue_from_trigger(self):

@@ -119,7 +119,10 @@ class SetupActionsTest(unittest.TestCase):
     def test_recognition_service_selection_applies_immediately(self):
         control = SimpleNamespace(
             _changing_asr_provider=False,
+            _asr_testing=False,
+            _flush_asr_key=Mock(return_value=True),
             _asr_provider=Mock(),
+            _asr_status=Mock(),
             _actions=Mock(),
             set_feedback=Mock(),
             _refresh=Mock(),
@@ -133,6 +136,8 @@ class SetupActionsTest(unittest.TestCase):
     def test_rejected_recognition_service_selection_restores_saved_value(self):
         control = SimpleNamespace(
             _changing_asr_provider=False,
+            _asr_testing=False,
+            _flush_asr_key=Mock(return_value=True),
             _asr_provider=Mock(),
             _actions=Mock(),
             set_feedback=Mock(),
@@ -147,11 +152,13 @@ class SetupActionsTest(unittest.TestCase):
     def test_onboarding_official_key_test_saves_first_and_shows_result(self):
         control = SimpleNamespace(
             _asr_testing=False,
+            _asr_provider=Mock(),
             _asr_key_save_source=0,
             _asr_key=Mock(),
             _asr_status=Mock(),
             _asr_test_button=Mock(),
             _actions=Mock(),
+            set_feedback=Mock(),
         )
         control._asr_key.get_text.return_value = "test-key"
         control._save_asr_key_now = lambda: ControlWindow._save_asr_key_now(control)
@@ -167,6 +174,7 @@ class SetupActionsTest(unittest.TestCase):
         self.assertFalse(control._asr_testing)
         self.assertEqual(
             control._asr_status.set_text.call_args.args[0], "API key accepted")
+        control.set_feedback.assert_called_with("API key accepted")
 
     def test_endpoint_test_has_adjacent_loading_and_success_feedback(self):
         view = SimpleNamespace(
@@ -230,15 +238,19 @@ class SetupActionsTest(unittest.TestCase):
     def test_official_key_test_saves_first_and_has_adjacent_feedback(self):
         view = SimpleNamespace(
             _asr_testing=False,
+            _asr_save_source=0,
+            asr_provider=Mock(),
             _asr_has_key=False,
             _save_asr=Mock(),
             _test_asr=Mock(),
             asr_key=Mock(),
             asr_status=Mock(),
+            status=Mock(),
             asr_test_button=Mock(),
         )
         view.asr_key.get_text.return_value = "test-key"
         view._save_asr_key_now = lambda: SettingsWindow._save_asr_key_now(view)
+        view.flush_edits = lambda: SettingsWindow.flush_edits(view)
         view._asr_tested = lambda result, error: SettingsWindow._asr_tested(
             view, result, error)
 
@@ -249,4 +261,5 @@ class SetupActionsTest(unittest.TestCase):
         completed = view._test_asr.call_args.args[1]
         completed("API key accepted", "")
         self.assertFalse(view._asr_testing)
+        view.asr_provider.set_sensitive.assert_called_with(True)
         self.assertEqual(view.asr_status.set_text.call_args.args[0], "API key accepted")

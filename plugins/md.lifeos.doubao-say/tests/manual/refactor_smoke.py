@@ -25,14 +25,14 @@ def main():
     with tempfile.TemporaryDirectory(prefix="doubao-gtk-refactor-") as directory, \
          ExitStack() as cleanup, \
          patch.dict(os.environ, {"XDG_CONFIG_HOME": directory + "/config", "XDG_DATA_HOME": directory + "/data"}), \
-         patch("doubao_input.app.Overlay"), patch("doubao_input.app.AudioCapture"), \
-         patch("doubao_input.app.EscapeGuard"), patch("doubao_input.app.UpdateChecker"), \
+         patch("doubao_input.app_runtime.Overlay"), patch("doubao_input.app_runtime.AudioCapture"), \
+         patch("doubao_input.app_runtime.EscapeGuard"), patch("doubao_input.app_runtime.UpdateChecker"), \
          patch("doubao_input.doubao.transcription.AudioCapture"), \
-         patch("doubao_input.app.EvdevPtt") as reader, \
-         patch("doubao_input.app.Injector") as injector, \
+         patch("doubao_input.app_runtime.TriggerReader") as reader, \
+         patch("doubao_input.app_runtime.Injector") as injector, \
          patch("doubao_input.ui.tray.Tray"), \
          patch("doubao_input.app.ParamsStore.has_saved", return_value=False), \
-         patch("doubao_input.app.focused_target", return_value="fake-target"), \
+         patch("doubao_input.app_runtime.focused_target", return_value="fake-target"), \
          patch("doubao_input.ui.settings_window.microphones", return_value=[]):
         reader.return_value.start.return_value = True
         injector.return_value.inject.return_value = True
@@ -114,17 +114,18 @@ def main():
         app._do_paste("Synthetic rehearsal result")
         assert app._setup_session.voice_ok and not app._delivery.busy
         injector.return_value.inject.assert_not_called()
-        app._target = "fake-target"
-        app._do_paste("Synthetic delivery result")
-        assert app._delivery.busy
         loop = GLib.MainLoop()
         statuses = []
         changed = app._delivery.changed
         def completed(status):
             changed(status)
-            statuses.append(status)
-            loop.quit()
+            if status != "pending":
+                statuses.append(status)
+                loop.quit()
         app._delivery.changed = completed
+        app._target = "fake-target"
+        app._do_paste("Synthetic delivery result")
+        assert app._delivery.busy
         timeout = GLib.timeout_add(2000, lambda: loop.quit() or False)
         loop.run()
         if statuses:

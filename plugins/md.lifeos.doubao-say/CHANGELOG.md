@@ -1,5 +1,71 @@
 # Changelog
 
+- macOS: turn Setup into a four-step guided flow with completion gates, Back navigation and automatic saving.
+
+- macOS: place recognition at the bottom of the active screen, recover one startup audio reconfiguration, and keep microphone/recognition failure messages visible.
+
+- macOS: save settings automatically, flush edits before tests and on close, defer changes during dictation, and remove the Save settings button.
+
+- macOS: expose English, Simplified Chinese and system language selection in General settings with immediate switching and persistent preferences.
+
+## 1.7.0
+
+- Add native Mac/Linux personal speech evaluation with local recordings, reviewed references, same-audio ASR/hotword/polishing comparisons and protected-term scoring.
+- Carry selected words and exact occurrence positions into explicitly confirmed corrections.
+- Record stop-to-recognition, polishing and delivery timings; compute Mac evaluation statistics in the background.
+- Persist API-key drafts across onboarding/settings provider changes and verify credential ownership.
+- Cancel interrupted polishing HTTP/TLS requests, reject redirects and incomplete results, and recover the final request worker.
+- Keep recording, retry delivery, microphone checks, evaluations and updates mutually exclusive; mark synthetic Mac paste events.
+
+## 1.6.0
+
+- Send a conservatively bounded personal hotword subset to official Volcengine streaming ASR on Mac and Linux, prioritize confirmed spellings, and show the exact preview.
+- Add explicit history correction preview/confirmation, immutable originals, contextual polishing references, persistent memory and per-entry forgetting.
+- Count confirmed corrections in local frequencies while keeping AI frequency organization limited to candidate terms and counts.
+- Add opt-in same-audio ASR/hotwords/polishing replay and offline scoring with failures, negative cases, latency and private reports.
+
+## 1.5.3
+
+- Clear stale Mac settings sidebar focus when opening or navigating with the mouse, preserve Tab/Space navigation, and keep keyboard focus outlines aligned to the full rounded row.
+
+## 1.5.2
+
+- Check a public update manifest first, fall back to the GitHub API, allow longer requests, reject invalid caches and show specific Mac connection, HTTP, timeout and rate-limit errors. Ignore stale responses after cancellation.
+
+## 1.5.1
+
+- Simplify the Mac update page to one state-dependent action, show release notes as a text link, and prevent repeated checks while a request is active.
+
+## 1.5.0
+
+- Add personal vocabulary for contextual polishing, a local rolling 30-day input ledger, reviewed AI frequency suggestions, and padded recent-text editors on macOS and Linux.
+
+- Match the macOS dictation overlay to the compact Linux layout, colors and state borders; center transcript and polishing activity on both platforms.
+
+- Add in-app update notifications, manual checks, verified downloads and restart installation on macOS and Linux, with retained settings and rollback on failed installation checks.
+
+- Hide receiver mappings while AU05 support is disabled and clarify when settings take effect.
+
+- Rework macOS settings with sidebar navigation, grouped forms, labeled polishing fields and a pinned save area, following the studio application settings structure.
+
+- Add a distinct macOS basketball shoulder drive with backward loading, forward torso travel, leading shoulder, delayed head follow-through and planted feet.
+
+- Refine the macOS basketball waveform with stronger shoulder and crouch poses, palm contact, grounded ball flight and clearer hair/vest detail.
+
+- Align macOS waveform motion and basketball speech cadence with Linux, add a synthetic appearance preview, delay the polishing shortcut hint, and migrate legacy built-in prompts while preserving custom text.
+
+- Add a native macOS development preview with Doubao web sign-in, Keychain credentials, tap/hold dictation, a nonactivating overlay, guarded paste and last-result recovery.
+- Align the Mac client with Linux recognition providers, bilingual polishing prompts, speculative previews, five-second fallback, configurable tap/hold/double-tap shortcuts, microphones, receiver mappings, settings and recent-text recovery.
+- Add loopback polishing and official-provider protocol acceptance, and isolated native settings screenshots.
+- Add local Swift/loopback transport checks and a separate Mac build workflow. Release Mac packages use Developer ID signing and Apple notarization; live microphone/paste acceptance remains separate.
+
+## 1.4.0
+
+- Automatically use permission-scoped GlobalShortcuts on GNOME without a special launch command or raw keyboard read permission for the dictation trigger.
+- Default new installations on every desktop to Ctrl+semicolon. Preserve saved shortcuts on other desktops and adapt unsupported saved evdev shortcuts on GNOME.
+- Register a valid GTK application identity before binding, retry rejected authorization, consume held shortcuts, and release sessions cleanly without an evdev fallback.
+- Add real GNOME 49 Wayland CI for authorization, normal launch, hold/release and cleanup, with regression tests for backend selection and settings migration.
+
 ## 1.3.1
 
 - Fixed clipboard restoration after dictation: prefer plain text when the original clipboard offers both plain text and HTML, preventing HTML markup from appearing in later text pastes. Image and file payloads retain priority; HTML-only clipboards still use HTML. Added Wayland and X11 regression coverage.

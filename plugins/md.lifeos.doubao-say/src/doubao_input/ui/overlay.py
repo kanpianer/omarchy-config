@@ -15,6 +15,7 @@ import tomllib
 from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING
+from doubao_input.ui.x11_stacking import X11Stacking
 from doubao_input.i18n import tr
 from doubao_input.ui.voice_motion import VoiceMotion
 from doubao_input.ui.waveform import draw_waveform
@@ -78,6 +79,7 @@ class Overlay:
         self.waveform_style = "bars"
         self._app_state = app_state
         self._window: Gtk.Window | None = None
+        self._x11_stacking = X11Stacking()
         self._label: Gtk.Label | None = None
         self._status_label: Gtk.Label | None = None
         self._status_row = None
@@ -127,7 +129,9 @@ class Overlay:
         self._show(tr("Polishing…", "润色中"))
         self._polishing_since = time.monotonic()
         self._waveform.set_visible(False)
-        self._status_label.set_xalign(0.0)
+        self._status_label.set_xalign(0.5)
+        self._status_label.set_hexpand(False)
+        self._status_row.set_halign(Gtk.Align.CENTER)
         self._status_row.add_css_class("polishing-status")
         self._status_row.set_tooltip_text(
             tr("Press shortcut again to use original", "再次按快捷键使用原文"))
@@ -140,6 +144,8 @@ class Overlay:
         self._polishing_since = None
         if self._status_row is not None:
             self._status_label.set_xalign(0.5)
+            self._status_label.set_hexpand(True)
+            self._status_row.set_halign(Gtk.Align.FILL)
             self._status_row.remove_css_class("polishing-status")
             self._status_row.set_tooltip_text(None)
             self._hint_label.set_visible(False)
@@ -161,6 +167,10 @@ class Overlay:
 
     def _set_update(self, info):
         self._update_info = info
+        if info is None:
+            if self._update_button is not None:
+                self._update_button.set_visible(False)
+            return
         if self._update_button is not None:
             message = tr(
                 f"Doubao Say {info.version} is available (current: {VERSION}). Finish dictation, then open the control center to update.",
@@ -282,6 +292,9 @@ class Overlay:
             from gi.repository import GdkX11
             win.connect("realize", lambda window: GdkX11.X11Surface.set_user_time(
                 window.get_surface(), 0))
+            win.connect("map", self._x11_stacking.request)
+            win.connect("unmap", self._x11_stacking.cancel)
+            win.connect("unrealize", self._x11_stacking.cancel)
         elif Gtk4LayerShell is not None and Gtk4LayerShell.is_supported():
             try:
                 Gtk4LayerShell.init_for_window(win)
@@ -420,8 +433,10 @@ class Overlay:
             }}
             .polishing-status {{
                 color: {self._theme['accent']};
-                padding: 6px 0 10px 0;
-                margin-bottom: 8px;
+                padding: 6px 0 8px 0;
+            }}
+            .polishing-status .doubao-overlay-label {{
+                color: {self._theme['accent']};
             }}
             .doubao-polish-hint {{
                 font-size: 10px;

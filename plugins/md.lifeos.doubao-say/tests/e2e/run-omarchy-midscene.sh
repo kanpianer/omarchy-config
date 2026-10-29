@@ -3,6 +3,13 @@ set -euo pipefail
 
 readonly ROOT_DIR="$PWD"
 readonly MIDSCENE_PROJECT="${1:?Usage: run-omarchy-midscene.sh PROJECT}"
+case "$MIDSCENE_PROJECT" in
+  all|omarchy-product|omarchy-shell|omarchy-providers) ;;
+  *)
+    echo "Unsupported Omarchy Midscene project: $MIDSCENE_PROJECT" >&2
+    exit 2
+    ;;
+esac
 readonly WORK_DIR="$ROOT_DIR/.midscene-omarchy"
 readonly HARNESS_DIR="$WORK_DIR/omarchy-iso"
 # shellcheck source=omarchy-vm.env
@@ -78,6 +85,8 @@ ssh_session_tty() {
     -o LogLevel=ERROR \
     omarchy@127.0.0.1 "export XDG_RUNTIME_DIR=/run/user/\$(id -u); \
       export DBUS_SESSION_BUS_ADDRESS=unix:path=\$XDG_RUNTIME_DIR/bus; \
+      export HYPRLAND_INSTANCE_SIGNATURE=\$(ls -t \$XDG_RUNTIME_DIR/hypr | head -1); \
+      export WAYLAND_DISPLAY=\$(find \$XDG_RUNTIME_DIR -maxdepth 1 -name 'wayland-*' ! -name '*.lock' -printf '%f\\n' | head -1); \
       export OMARCHY_PATH=/usr/share/omarchy; \
       export PATH=\$OMARCHY_PATH/bin:\$PATH; \
       $command"
@@ -156,8 +165,10 @@ echo "Installing the source checkout through its unified installer."
 # omarchy-pkg-add use, matching a user who has just authenticated in a terminal.
 # The compact prebuilt VM omits Pacman's sync databases, so refresh metadata in
 # this disposable guest before asking the unchanged installer to resolve packages.
+# Preserve its native Wayland session so the installer includes layer-shell.
 ssh_session_tty "printf '%s\\n' omarchy | sudo -S -v && \
   sudo pacman -Sy --noconfirm && '$PLUGIN_DIR/install.sh' --yes"
+ssh_session "pacman -Q gtk4-layer-shell && python3 -c \"import gi; gi.require_version('Gtk4LayerShell', '1.0'); from gi.repository import Gtk4LayerShell\""
 ssh_guest "test -f /home/omarchy/.local/share/applications/doubao-say.desktop && \
   grep -Fq '$PLUGIN_DIR/start.sh' /home/omarchy/.local/share/applications/doubao-say.desktop"
 
@@ -215,15 +226,11 @@ for _gate_attempt in {1..100}; do
   sleep 0.2
 done
 
-case "$MIDSCENE_PROJECT" in
-  omarchy-shard-[1-4])
-    npm --prefix tests/e2e test -- --project "$MIDSCENE_PROJECT"
-    ;;
-  omarchy-shell)
-    npm --prefix tests/e2e test -- --project "$MIDSCENE_PROJECT"
-    ;;
-  *)
-    echo "Unsupported Omarchy Midscene project: $MIDSCENE_PROJECT" >&2
-    exit 2
-    ;;
-esac
+if [[ $MIDSCENE_PROJECT == all ]]; then
+  result=0
+  npm --prefix tests/e2e test -- --project omarchy-product || result=1
+  npm --prefix tests/e2e test -- --project omarchy-shell || result=1
+  exit "$result"
+else
+  npm --prefix tests/e2e test -- --project "$MIDSCENE_PROJECT"
+fi

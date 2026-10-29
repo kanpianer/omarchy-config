@@ -1,5 +1,11 @@
 # Doubao Say
 
+> **macOS development preview:** A native Swift menu-bar client supports Doubao web sign-in, official Volcengine and Deepgram recognition, optional polishing, configurable shortcuts, microphone selection and input recovery. See the [Mac build and usage guide](macos/README.zh-CN.md) (Chinese). No Developer ID signed or notarized Mac release is available yet.
+
+On macOS, closing the last settings or sign-in window keeps dictation available
+from the menu bar while removing the app from the Dock and Cmd+Tab. Opening a
+window restores both entries; minimized windows keep their Dock entry.
+
 [Website](https://doubao-say.lifeos.md/) · [简体中文](README.zh-CN.md)
 
 ![Doubao Say voice input running on Omarchy Linux](images/readme-en.jpeg)
@@ -89,9 +95,31 @@ the stars static.
 
 Turn on the **Voice polishing · Experimental** switch on the Trigger key page to configure an
 OpenAI-compatible Base URL, API key, model and separate Chinese/English prompts.
+In the Linux GTK client, the polishing service can also be set to **ChatGPT plan**.
+Use **Continue with ChatGPT** to authorize Doubao Say, choose an account-specific model,
+then enable polishing. Account selection, disconnect, model refresh and **Manage usage**
+are available in the same panel. Credentials stay in an owner-only local store;
+the existing API endpoint, key and model settings are preserved. This option powers
+text polishing, while speech recognition continues through the selected speech service.
+The five-second original-text fallback also applies to connection, quota and renewal failures.
+If ChatGPT reports a plan usage limit, further polishing pauses and keeps the
+original text. Open **Manage usage** to review the plan or app limit, then use
+**Retry plan usage** when available; signing in again is not required for a quota error.
+The native macOS app also offers **ChatGPT plan** in Voice polishing. Its shared
+connection serves dictation, AI vocabulary organization and polishing comparisons;
+credentials stay in the app's Keychain. Recognition remains on the selected speech
+service, and existing API configuration is preserved. Choose a model from the
+dropdown; reconnect, add/disconnect accounts and refresh models through **Account
+options**. Usage-limit actions appear when needed.
 Doubao Say selects a prompt from each transcript's dominant language. The bundled prompts remove
 filler words and false starts, improves punctuation and organization, preserves
 meaning, and can be edited or restored to its default.
+
+The built-in prompts use passage context to correct unambiguous accent-related recognition errors, including Chinese retroflex initials, nasal endings, and n/l or f/h confusions. Ambiguous wording is retained; names, quantities and negation are never guessed from sound alone. Updates migrate exact old defaults while preserving custom prompts.
+
+Explicitly spoken points such as 第一、第二、第三 are formatted as Markdown numbered lists, one item per line; ordinary references to days, rankings or counts stay as prose.
+
+Polished text also gains restrained reading layout: related sentences stay together, clear topic changes can start a new paragraph, and paragraphs and lists are separated by one blank line. Short answers stay compact; formatting does not add headings or change the content order.
 
 ### Choose a fast polishing model
 
@@ -154,11 +182,16 @@ diagnostics. Use **Test endpoint** before enabling.
 
 Native X11 uses Ctrl+V, or Ctrl+Shift+V for recognized terminal classes. Its
 floating overlay does not request activation; the window manager chooses its
-position. Hyprland keeps its bottom-anchored layer-shell overlay. PipeWire
+position. When GTK uses X11, optional `wmctrl` requests above-window stacking
+each time the overlay is shown, without activating it or waiting on the GTK main loop.
+If the helper is missing or fails, recording and input continue with the window
+manager's normal stacking. Fullscreen coverage depends on the window manager.
+Hyprland keeps its bottom-anchored layer-shell overlay. PipeWire
 microphone selection works through `pw-record` on both desktops.
 XWayland is not treated as a native X11 session. The X11 helpers are probed at
-runtime; without either one, recognition still works and the result is retained
-for manual copying.
+runtime; without `xdotool` or `xclip`, recognition still works and the result is retained
+for manual copying. Install `wmctrl` separately for X11 overlay stacking
+(`sudo apt install wmctrl` or `sudo pacman -S --needed wmctrl`).
 
 ### Text input method
 
@@ -183,12 +216,15 @@ app with no automatic clipboard fallback. Check for partial input before retryin
 
 ## Gestures
 
-Default key: **Fn**. Change it to Ctrl, Shift, Alt, Meta, F8, F9, or Disabled.
+New installations default to **Ctrl+;** on every desktop. GNOME uses the desktop
+portal; other desktops use evdev. Existing saved shortcuts are retained, except
+that GNOME adapts unsupported saved evdev shortcuts (including Fn and modifier-only keys) to Ctrl+;.
 Modifier keys are logical choices: either the left or right physical key works.
 Your keyboard must report Fn as a Linux key; otherwise choose another key.
 
 - Tap to start; tap again to finish and paste.
-- With Fn as the trigger, pressing another key while recording also finishes and pastes. Escape still cancels; the finishing key still reaches the foreground app.
+- On Linux, with Fn as the trigger, pressing another key while recording also finishes and pastes. Escape still cancels; the finishing key still reaches the foreground app.
+- On macOS, any key during voice input finishes dictation without performing its original action, including Escape, Enter and shortcut chords. Their releases are swallowed as well. Double-tap sends Enter only while idle.
 - Hold past the threshold to speak; release to finish and paste.
 - Select one preset, or choose **Record a shortcut…** to capture a custom combination such as Ctrl+Alt+Space. Only one trigger is active.
 - Press the active trigger twice to send Enter without dictation. This can submit messages or execute terminal commands.
@@ -217,8 +253,15 @@ The application checks the repository's latest stable GitHub Release at startup
 and while running, with network checks limited to once every 24 hours. A newer
 version adds a small red dot to the recording overlay: hover or click for
 version information. Finish dictation, then use the control center's red
-**Update** button to open the release page without interrupting your paste target.
-Updates are never downloaded or installed automatically.
+**Update** button to download, verify and install the update, then restart.
+Checks are automatic; installation starts only when you choose it. Recording,
+polishing and text delivery must finish first. Settings and login data are retained.
+Linux supports official clean Git checkouts and managed app/plugin archives;
+package-manager and relocated installs report that their original installer is needed.
+Archives must match the CPU and Python version. Failed installation checks restore
+the previous app. On macOS, Settings → Updates shows download progress and cancellation;
+DMGs require SHA256SUMS, the same Developer ID, notarization and a matching bundle ID.
+See [update packaging](packaging/UPDATES.md) for release prerequisites.
 
 ## Feedback
 
@@ -246,8 +289,35 @@ as HTML; images and URI lists retain their existing priority. This is best-effor
 restoration of one payload, not all original clipboard formats.
 A copy made by the user during delivery is never overwritten.
 Cancellation stops remaining input and cannot undo text already delivered.
+Standalone Enter does not change the previous dictation's history or word counts.
+On macOS, retries, new dictation and standalone Enter are disabled during a retry
+countdown or pending delivery. Use Escape or **Cancel input** to cancel it.
 Failed recognition can preserve partial text; failed paste preserves the result.
-This slot is memory-only, not a transcript history. Exiting loses it.
+The editable recent-text slot is memory-only. Completed dictation attempts are
+stored separately in a local 30-day history, with recognition original, final
+output, polishing and input status. History has no record-count cap and can be
+paused or cleared in Vocabulary & history; voice tests and cancelled recognition
+are excluded. Personal vocabulary is saved automatically (one term per line,
+up to 200 terms of 80 characters). Official Volcengine ASR sends a length-limited
+subset as session hotwords, prioritizing spellings you explicitly confirmed.
+The vocabulary page previews the actual subset. Doubao Web and other engines use
+this list only as context during AI polishing. This does not retrain the model.
+From an input-history entry, select the wrong term and choose **Correct & remember…**,
+or select it in the dialog to fill it in. Enter the correct spelling, review the preview, then confirm. Only that explicit
+action creates memory. Original recognition and polishing output are preserved.
+Future polishing receives relevant correction pairs and example contexts as
+reference data, never global replacements. You can forget pairs individually;
+clearing or expiring history retains vocabulary and correction memory.
+Local frequencies use sent, polished results and explicitly confirmed corrections;
+AI organization sends candidate terms and counts
+to the configured polishing service, not the full history. Review and select
+suggestions before adding. Data is local to each device; there is no cross-device sync.
+
+For repeatable comparisons on the same recordings, use the opt-in
+[personal speech evaluation CLI](packaging/SPEECH_EVAL.md). It separately scores
+raw ASR, hotword ASR and optional polishing, including negative examples where
+Midjourney is correct. Offline scoring supports manually collected competitor
+outputs. No personal-accent improvement is claimed without actual recordings.
 
 Automatic paste requires a known, unchanged Hyprland or native X11 window.
 On X11, missing window metadata, a closed window or the app's own window prevents
@@ -263,6 +333,13 @@ Key recording accepts ordinary keyboard keys and modifier combinations. The left
 and right variants of Ctrl, Shift, Alt and Meta are treated as the same key.
 Automatic detection of every desktop shortcut conflict is not supported.
 
+The **Speech evaluation** page in Mac Settings and Linux Vocabulary & history
+records local samples and compares the same audio with raw ASR, hotwords, and
+optional polishing. References are only used for scoring. Comparison explicitly
+uploads audio to your paid official ASR; drafts save automatically and recordings
+remain until deleted. Input history also shows stop-to-ASR, polishing, input and
+total waiting times, separately from recording duration and replay timing.
+
 ## Privacy and limitations
 
 After a recording gesture is confirmed, the default unofficial backend sends the
@@ -277,7 +354,44 @@ The update check sends a standard HTTPS request to GitHub at most once per day;
 GitHub receives the usual connection metadata. The cached release tag and check
 time contain no account, transcript or device identifier.
 
-Keyboard access and `/dev/uinput` permissions are required. Do not run the app as root.
+The default evdev trigger needs keyboard-device access. Adding your account to the
+`input` group grants other processes running with that group access to keyboard
+input too, including sensitive keystrokes; it is not an app-specific permission.
+Do not run the app as root.
+
+### Permission-scoped shortcuts on GNOME
+
+On GNOME, launch Doubao Say normally from its icon or existing command. It
+selects the GlobalShortcuts portal automatically and requests **Ctrl+;** on a
+fresh installation on every desktop. Unsupported saved evdev shortcuts, including Fn and modifier-only keys, also become Ctrl+; on GNOME;
+portal-supported shortcuts and Disabled are preserved. No environment variable or
+manual shortcut selection is needed. Approve the desktop's shortcut dialog.
+Other desktops retain their existing evdev behavior. For explicit troubleshooting
+only, `DOUBAO_SAY_TRIGGER_BACKEND=portal` or `evdev` overrides automatic selection.
+Portal mode installs its `md.lifeos.DoubaoSay.desktop` identity launcher under the
+XDG applications directory and registers that ID before requesting authorization.
+Approve the shortcut in the desktop's GlobalShortcuts dialog. The desktop may
+change the requested shortcut; its dialog is authoritative. This mode receives
+only activation/deactivation of the authorized dictation action, without opening
+`/dev/input` or requiring membership in `input`. Hold-to-talk, tap-to-toggle and
+double-tap use the existing gesture timing. Denial, timeout or a missing portal
+stops the listener without silently falling back to evdev. Restart the app to
+retry authorization.
+
+Portal mode does not support Fn/modifier-only shortcuts or raw key recording;
+supported keys are semicolon, F8, F9, Space, Return or Tab with optional Ctrl/Shift/Alt/Meta.
+Global Esc cancellation is not
+registered in this mode, so use the control center or tray's Cancel action.
+Vibekey is a separate, optional device listener and retains its own permissions.
+Input delivery is separate: `/dev/uinput` access may still be needed for injected
+shortcuts/paste. This change removes broad **keyboard reading** from the dictation
+trigger, not every device permission from the app. It does not remove existing group
+memberships or change system permissions.
+
+The backend requires an implementation of `org.freedesktop.portal.GlobalShortcuts`.
+GNOME backend availability varies by version. Full GNOME application support
+(including overlay and text delivery) is not established by this trigger feature.
+To explicitly retain raw keyboard behavior on GNOME, set the override to `evdev`.
 Vibekey support is optional and off by default. When enabled in Settings, its three
 transmitter buttons map to recording, Enter and cancel. Turning the dial right or
 left sends Down or Up by default, and pressing it sends Meta+Backspace. All six
@@ -429,7 +543,7 @@ validate package metadata and scan for secrets. The current whole-package branch
 coverage floor is 55%; desktop UI, WebKit and real-device paths remain included
 in the denominator.
 
-The current release version is **1.3.1**. A `v1.3.1` tag must match every embedded
+The current release version is **1.7.0**. A `v1.7.0` tag must match every embedded
 version before CI can publish. Tag releases rebuild both offline app and Omarchy
 plugin archives for Python 3.11–3.14 and attach SHA-256 checksums. A manually started
 release workflow builds artifacts for inspection but does not publish them. Real

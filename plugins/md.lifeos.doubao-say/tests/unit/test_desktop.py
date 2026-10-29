@@ -46,7 +46,7 @@ class DesktopTest(TestCase):
                         "pw-record", "pw-dump", *(('xdotool', 'xclip') if x11 else ('wl-copy',))) else None
                 with patch("gi.require_version", side_effect=require), \
                      patch.object(preflight.importlib, "import_module"), \
-                     patch.object(preflight.shutil, "which", side_effect=available):
+                     patch.object(preflight, "has_tool", side_effect=available):
                     results = preflight.check_system()
                     self.assertTrue(all(results.values()), results)
                     self.assertIn("GdkX11" if x11 else "Gtk4LayerShell", results)
@@ -57,13 +57,15 @@ class DesktopTest(TestCase):
                     self.assertTrue(all(optional.values()))
                     self.assertNotIn("evdev", results)
                     self.assertIn("evdev", preflight.check_runtime())
+                    self.assertIn("jwt", preflight.check_runtime())
+                    self.assertIn("cryptography", preflight.check_runtime())
                     self.assertNotIn("sounddevice", preflight.check_runtime())
 
     def test_missing_x11_tool_is_optional_and_reported(self):
         with patch.dict(os.environ, SESSIONS[0][0], clear=True), \
              patch("gi.require_version"), \
              patch.object(preflight.importlib, "import_module"), \
-             patch.object(preflight.shutil, "which", side_effect=lambda tool: None if tool == "xdotool" else tool):
+             patch.object(preflight, "has_tool", side_effect=lambda tool: None if tool == "xdotool" else tool):
             self.assertNotIn("xdotool", preflight.check_system())
             self.assertFalse(preflight.check_optional_tools()["xdotool"])
             with patch.object(preflight, "check_runtime", return_value={"required": True}), \
@@ -100,7 +102,7 @@ class DesktopTest(TestCase):
         from doubao_input.ui import overlay
         class StopBeforeWidgets(Exception):
             pass
-        owner = SimpleNamespace(_window=None)
+        owner = overlay.Overlay()
         with patch.dict(os.environ, {"DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-0"}, clear=True), \
              patch.object(overlay.Gtk, "Window") as window, \
              patch.object(overlay.Gtk, "Box", side_effect=StopBeforeWidgets), \
@@ -111,9 +113,12 @@ class DesktopTest(TestCase):
             with self.assertRaises(StopBeforeWidgets):
                 overlay.Overlay._ensure_window(owner)
             win.set_focusable.assert_called_once_with(False)
-            signal, callback = win.connect.call_args.args
-            self.assertEqual(signal, "realize")
-            callback(win)
+            handlers = dict(call.args for call in win.connect.call_args_list)
+            self.assertEqual(set(handlers), {"realize", "map", "unmap", "unrealize"})
+            self.assertEqual(handlers["map"], owner._x11_stacking.request)
+            self.assertEqual(handlers["unmap"], owner._x11_stacking.cancel)
+            self.assertEqual(handlers["unrealize"], owner._x11_stacking.cancel)
+            handlers["realize"](win)
             user_time.assert_called_once_with(win.get_surface.return_value, 0)
             layer.init_for_window.assert_not_called()
 
@@ -131,6 +136,7 @@ class DesktopTest(TestCase):
                 layer.is_supported.return_value = supported
                 with self.assertRaises(StopBeforeWidgets):
                     overlay.Overlay._ensure_window(SimpleNamespace(_window=None))
+                win.connect.assert_not_called()
                 if supported:
                     layer.init_for_window.assert_called_once_with(win)
                     layer.set_keyboard_mode.assert_called_once_with(win, layer.KeyboardMode.NONE)

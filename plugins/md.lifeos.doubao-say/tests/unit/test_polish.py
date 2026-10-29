@@ -29,6 +29,47 @@ class StreamResponse(Response):
 
 
 class PolishTest(TestCase):
+    def test_readable_layout_rules_preserve_paragraph_and_list_spacing(self):
+        self.assertIn("各段之间空一行", DEFAULT_POLISH_PROMPT_ZH)
+        self.assertIn("简短表达无需拆段", DEFAULT_POLISH_PROMPT_ZH)
+        self.assertIn("项目之间不额外空行", DEFAULT_POLISH_PROMPT_ZH)
+        self.assertIn("今天核对需求，已经确认。\n\n明天开始开发", DEFAULT_POLISH_PROMPT_ZH)
+        self.assertIn("Related sentences belong together", DEFAULT_POLISH_PROMPT_EN)
+        formatted = "引言。\n\n1. 核对需求\n2. 开发\n\n明天验收。"
+        body = json.dumps({"choices": [{"message": {"content": formatted}}]}).encode()
+        with patch("doubao_input.polish.open_request", return_value=Response(body)):
+            result = PolishClient().polish(
+                "synthetic text", base_url="https://example.com/v1", api_key="fake-key",
+                model="test", prompt=DEFAULT_POLISH_PROMPT_ZH)
+        self.assertEqual(result, formatted)
+
+
+    def test_enumeration_rules_specify_literal_multiline_markdown(self):
+        self.assertIn("第一、第二、第三", DEFAULT_POLISH_PROMPT_ZH)
+        self.assertIn("1. 核对需求。\n2. 完成开发。\n3. 验收结果。", DEFAULT_POLISH_PROMPT_ZH)
+        self.assertIn("第一天出发，第二天到达", DEFAULT_POLISH_PROMPT_ZH)
+        self.assertIn("1. Confirm requirements.\n2. Implement.\n3. Verify.", DEFAULT_POLISH_PROMPT_EN)
+        self.assertIn("An ordinal referring to a date", DEFAULT_POLISH_PROMPT_EN)
+
+
+    def test_contextual_sound_rules_reach_request_without_rewriting_input_locally(self):
+        raw = "请重心打开设置页面。"
+        settings = Settings()
+        with patch("doubao_input.polish.open_request", return_value=Response(
+                b'{"choices":[{"message":{"content":"result"}}]}')) as call:
+            PolishClient().polish(raw, base_url="https://example.com/v1",
+                                 api_key="synthetic", model="test",
+                                 prompt=polish_prompt_for_text(raw, settings))
+        messages = json.loads(call.call_args.args[0].data)["messages"]
+        self.assertEqual(messages[1]["content"], raw)
+        self.assertEqual(messages[0]["content"], DEFAULT_POLISH_PROMPT_ZH)
+        for prompt in (DEFAULT_POLISH_PROMPT_ZH, DEFAULT_POLISH_PROMPT_EN):
+            for pair in ("z/zh", "c/ch", "s/sh", "an/ang", "en/eng", "in/ing", "n/l", "f/h"):
+                self.assertIn(pair, prompt)
+        self.assertIn("否定表达", DEFAULT_POLISH_PROMPT_ZH)
+        self.assertIn("无法排除其他解释", DEFAULT_POLISH_PROMPT_ZH)
+
+
     def test_zhipu_low_latency_parameters_in_streaming_and_non_streaming_requests(self):
         for path in ("/api/paas/v4", "/api/coding/paas/v4"):
             for model, expected in (
@@ -41,7 +82,7 @@ class PolishTest(TestCase):
                             b'data: [DONE]\n\n') if streaming else Response(
                                 b'{"choices":[{"message":{"content":"polished"}}]}'))
                         seen = []
-                        with patch("doubao_input.polish.request.urlopen", return_value=response) as call:
+                        with patch("doubao_input.polish.open_request", return_value=response) as call:
                             result = PolishClient().polish(
                                 "synthetic text", base_url="https://open.bigmodel.cn" + path,
                                 api_key="fake-key", model=model, prompt="Polish text",
@@ -61,7 +102,7 @@ class PolishTest(TestCase):
         for base, expected in (("https://api.deepseek.com/v1", True),
                                ("https://example.test/v1", False)):
             response = Response(b'{"choices":[{"message":{"content":"ok"}}]}')
-            with patch("doubao_input.polish.request.urlopen", return_value=response) as call:
+            with patch("doubao_input.polish.open_request", return_value=response) as call:
                 PolishClient().polish("text", base_url=base, api_key="key",
                                       model="model", prompt="prompt")
             payload = json.loads(call.call_args.args[0].data)
@@ -71,7 +112,7 @@ class PolishTest(TestCase):
 
     def test_client_parses_compatible_response_without_leaking_key(self):
         response = Response(json.dumps({"choices": [{"message": {"content": " polished "}}]}).encode())
-        with patch("doubao_input.polish.request.urlopen", return_value=response) as open_url:
+        with patch("doubao_input.polish.open_request", return_value=response) as open_url:
             result = PolishClient().polish("raw", base_url="https://example.test/v1",
                 api_key="secret", model="model", prompt="prompt")
         self.assertEqual(result, "polished")
@@ -83,13 +124,22 @@ class PolishTest(TestCase):
                 b'data: {"choices":[{"delta":{"content":"text"}}]}\n\n'
                 b'data: [DONE]\n\n')
         seen = []
-        with patch("doubao_input.polish.request.urlopen",
+        with patch("doubao_input.polish.open_request",
                    return_value=StreamResponse(body)):
             result = PolishClient().polish("raw", base_url="https://example.test/v1",
                 api_key="secret", model="model", prompt="prompt",
                 on_progress=seen.append)
         self.assertEqual(result, "clear text")
         self.assertEqual(seen, ["clear ", "clear text"])
+
+    def test_nonstream_rejects_truncated_and_filtered_results(self):
+        for reason in ("length", "content_filter", "unknown_failure"):
+            body = json.dumps({"choices": [{"message": {"content": "partial"},
+                                             "finish_reason": reason}]}).encode()
+            with self.subTest(reason=reason), patch("doubao_input.polish.open_request", return_value=Response(body)):
+                with self.assertRaisesRegex(ValueError, "ended before completion"):
+                    PolishClient().polish("synthetic", base_url="https://example.test/v1",
+                                          api_key="synthetic", model="test", prompt="test")
 
     def test_stream_rejects_partial_text_after_abrupt_eof_or_length_limit(self):
         responses = (

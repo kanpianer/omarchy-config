@@ -51,18 +51,16 @@
         },
         {
           "id": "io.github.limbdarkening.softether",
-          "accountName": "#US TT 23.93.5.4",
+          "accountName": "#US Charter inm",
           "accountOrder": [
             "#JP EN SoftBank 4%",
             "#JP EN SoftBank 3%",
+            "#JP en 118.106.11.179",
             "#JP EN BIGLOBE 210.147.152.187 %71",
             "#JP EN SoftBank 126.237.151.103 %71",
-            "#JP KDDI 111.103.105.247",
-            "#JP WZ SoftBank 3%",
-            "#JP WZ SoftBank 126.111.45.221 %83",
+            "#JP wz 126.86.31.151",
+            "#JP wz 60.137.122.174",
             "#JP FreeBit 27.134.47.176",
-            "#US tmj 38.71.123.196",
-            "#US tmj 73.131.220.236",
             "#US #tmj Verizon 83%",
             "#US TT 23.93.5.4",
             "#US Charter inm",
@@ -72,11 +70,18 @@
             "#CA Shaw 184.68.30.116",
             "#UA 45.14.24.203",
             "#JP 1111111111111111111111111",
-            "#JP WZ JCOM 125.8.169.194 %66 B",
             "#JP 60.155.233.108 %75",
             "#JP Sony 223.134.156.41 %65",
             "#JP EN JCOM 0%",
-            "#JP WZ 123.1.19.33 B"
+            "#JP 180.16.35.7",
+            "#JP 220.153.169.228",
+            "#JP 61.21.196.8",
+            "#US 38.34.239.132",
+            "#JP 106.139.165.4",
+            "#JP 124.98.189.166",
+            "#JP 125.8.222.245",
+            "#JP 126.145.125.132",
+            "#JP 183.176.251.121"
           ],
           "adapterName": "vpn_vpn",
           "networkProfileName": "SoftEther VPN Network",
@@ -111,7 +116,7 @@
     "position": "top",
     "transparent": false,
     "id": "gao.bar",
-    "autoHide": true
+    "autoHide": false
   },
   "idle": {
     "lock": 300,

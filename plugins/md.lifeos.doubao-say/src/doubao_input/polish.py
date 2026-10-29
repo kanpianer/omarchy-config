@@ -5,12 +5,14 @@ import logging
 import os
 import re
 import stat
+import sqlite3
 from threading import Event, Timer
 import time
 from urllib import error, request
 
 from doubao_input.settings import config_dir, write_atomic
 from doubao_input.reasoning import reasoning_policy
+from doubao_input.polish_transport import RequestCancellation, open_request
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +21,14 @@ def polish_prompt_for_text(text, settings):
     """Choose the Chinese or English prompt from the transcript's dominant script."""
     han_characters = len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", text))
     latin_words = len(re.findall(r"[A-Za-z]+", text))
-    if han_characters > latin_words:
-        return settings.polish_prompt_zh
-    return settings.polish_prompt_en
+    from doubao_input.personal import PersonalStore, vocabulary_prompt
+    prompt = settings.polish_prompt_zh if han_characters > latin_words else settings.polish_prompt_en
+    try:
+        from doubao_input.personal_corrections import correction_prompt
+        store = PersonalStore()
+        return correction_prompt(vocabulary_prompt(prompt, store.words()), text, store.corrections())
+    except (OSError, ValueError, sqlite3.Error):
+        return prompt
 
 
 class ApiKeyStore:
@@ -60,8 +67,12 @@ def chat_completions_url(base_url):
 
 
 class PolishClient:
+    def polish_chatgpt(self, text, **options):
+        from doubao_input.chatgpt import chatgpt_client
+        return chatgpt_client().polish(text, **options)
+
     def polish(self, text, *, base_url, api_key, model, prompt, timeout=25,
-               on_progress=None):
+               on_progress=None, cancellation=None):
         body = {"model": model, "temperature": 0.2,
             "messages": [{"role": "system", "content": prompt},
                          {"role": "user", "content": text}],
@@ -74,7 +85,7 @@ class PolishClient:
                      "Content-Type": "application/json",
                      "Accept": "application/json"}, method="POST")
         try:
-            with request.urlopen(req, timeout=timeout) as response:
+            with open_request(req, timeout=timeout, cancellation=cancellation) as response:
                 if on_progress:
                     content = self._read_stream(response, on_progress)
                     raw = None
@@ -86,9 +97,12 @@ class PolishClient:
             if len(raw) > 1_000_000:
                 raise ValueError("Polishing response is too large")
             try:
-                content = json.loads(raw)["choices"][0]["message"]["content"].strip()
+                choice = json.loads(raw)["choices"][0]
+                content = choice["message"]["content"].strip()
             except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
                 raise ValueError("The endpoint returned an incompatible response") from exc
+            if choice.get("finish_reason") not in (None, "stop"):
+                raise ValueError("Polishing response ended before completion")
         if not content:
             raise ValueError("The endpoint returned empty text")
         return content
@@ -141,13 +155,12 @@ class PolishManager:
     def __init__(self, dispatch, client=None):
         self._dispatch = dispatch
         self._client = client or PolishClient()
-        # A speculative request cannot be interrupted while urllib is waiting
-        # for the server. Keep it off the final-delivery lane so resumed speech
-        # never leaves the request made on release queued behind stale work.
+        # Keep preview connection setup off the final-delivery lane as well.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="doubao-polish-final")
         self._speculative_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="doubao-polish-preview")
         self._token = Event()
+        self._cancellation = RequestCancellation()
         self._future = None
         self._deadline = None
         self._closed = False
@@ -158,6 +171,8 @@ class PolishManager:
         self.cancel()
         token = Event()
         self._token = token
+        cancellation = RequestCancellation()
+        self._cancellation = cancellation
         self.busy = True
         started = time.monotonic()
         executor = self._speculative_executor if speculative else self._executor
@@ -173,10 +188,13 @@ class PolishManager:
                 return False
             self._dispatch(deliver_progress)
 
-        future = executor.submit(self._client.polish, text,
+        using_chatgpt = getattr(settings, "polish_provider", "api") == "chatgpt"
+        operation = self._client.polish_chatgpt if using_chatgpt else self._client.polish
+        future = executor.submit(operation, text,
             base_url=settings.polish_base_url, api_key=api_key,
-            model=settings.polish_model, prompt=polish_prompt_for_text(text, settings),
-            timeout=timeout, on_progress=report if progress else None)
+            model=settings.polish_chatgpt_model if using_chatgpt else settings.polish_model,
+            prompt=polish_prompt_for_text(text, settings),
+            timeout=timeout, on_progress=report if progress else None, cancellation=cancellation)
         self._future = future
 
         def finished(future):
@@ -219,6 +237,7 @@ class PolishManager:
 
     def cancel(self):
         self._token.set()
+        self._cancellation.set()
         if self._deadline is not None:
             self._deadline.cancel()
         if self._future is not None:

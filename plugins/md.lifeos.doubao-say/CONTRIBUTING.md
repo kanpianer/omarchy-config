@@ -64,6 +64,11 @@ relevant scenario when fixing a covered user-visible flow.
 
 ## Review and release
 
+Use English for all GitHub-facing content in this repository: issue and pull
+request titles, descriptions and comments, commit messages, release titles and
+release notes. Keep explicitly localized UI strings and documentation in their
+specified languages. Conversation with the maintainer may remain in Chinese.
+
 Use small conventional commits (`fix(login): ...`, `test(packaging): ...`). Explain
 the user-visible problem, approach, tests and remaining limitations in a PR.
 Run `make check` and the relevant manual acceptance before proposing a release.
@@ -79,9 +84,9 @@ For marketplace preparation, use `make marketplace-check` with Gitleaks on PATH
 and follow [the publishing checklist](packaging/MARKETPLACE.md). Reports and local
 review drafts belong in ignored `artifacts/` and `docs/`, not in release payloads.
 
-The current public version is `1.3.1`. Keep `pyproject.toml`, `manifest.json` and
+The current public version is `1.7.0`. Keep `pyproject.toml`, `manifest.json` and
 `src/doubao_input/product.py` aligned; `python packaging/version_check.py` verifies
-them. A pushed tag such as `v1.3.1` runs all checks and secret scanning, builds app
+them. A pushed tag such as `v1.7.0` runs all checks and secret scanning, builds app
 and plugin archives for every supported Python version, creates `SHA256SUMS`, and
 publishes the GitHub Release. `workflow_dispatch` performs a non-publishing build.
 # Bounded desktop tests
